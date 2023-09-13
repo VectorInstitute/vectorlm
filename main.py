@@ -80,69 +80,13 @@ def setup_accelerator(cfg, training_args):
     return accelerator, wandb_tracker
 
 
-def restore_checkpoint(model, out_dir: str, accelerator: Accelerator):
-    latest_checkpoint_folder = get_latest_checkpoint_dir(
-        os.path.join(out_dir, "checkpoints")
-    )
-    save_dir = os.path.join(
-        out_dir,
-        "checkpoints",
-        latest_checkpoint_folder,
-    )
-    accelerator.print(f"Checkpoint found at {save_dir}")
-    save_path = os.path.join(save_dir, "meta_data.pkl")
-    meta_dict = torch.load(save_path)
-    checkpointed_step = meta_dict["tr_step"]
-    to_remove = meta_dict["processed_ids"].int().tolist()
-    scheduler_states = torch.load(os.path.join(save_dir, "scheduler.bin"))
-    FSDP.set_state_dict_type(model, StateDictType.LOCAL_STATE_DICT)
-    weights_name = f"model_rank{accelerator.process_index}.bin"
-    input_model_file = os.path.join(save_dir, weights_name)
-    print(f"Loading model from {input_model_file}")
-    state_dict = torch.load(input_model_file)
-    model.load_state_dict(state_dict)
-    print(f"Model loaded from {input_model_file}")
-    accelerator.wait_for_everyone()
-
-    accelerator.print(f"Checkpoint loaded from {save_dir}")
-    accelerator.wait_for_everyone()
-    return checkpointed_step, to_remove, model, scheduler_states
-
-
-def load_sharded_state(model, optimizer, saved_state):
-    sharded_param_names = [n for n, p in model.named_parameters()]
-    saved_state["param_groups"][0]["params"] = sharded_param_names
-    sharded_states = dict()
-    if saved_state["state"] != {}:
-        for param_name in sharded_param_names:
-            sharded_states[param_name] = saved_state["state"][param_name].to(
-                model.device
-            )
-        saved_state["state"] = sharded_states
-    optimizer.load_state_dict(saved_state)
-
-
-def restore_optimizer(model, optimizer, in_dir, accelerator):
-    FSDP.set_state_dict_type(model, StateDictType.LOCAL_STATE_DICT)
-
-    accelerator.wait_for_everyone()
-
-    latest_checkpoint_folder = get_latest_checkpoint_dir(
-        os.path.join(in_dir, "checkpoints")
-    )
-    in_dir = os.path.join(
-        in_dir,
-        "checkpoints",
-        latest_checkpoint_folder,
-    )
-
-    input_optimizer_file = f"optimizer_rank{accelerator.process_index}.bin"
-    input_optimizer_file = os.path.join(in_dir, input_optimizer_file)
-    print(f"Loading optimizer state from {input_optimizer_file}")
-    osd = torch.load(input_optimizer_file)
-    osd = FSDP.optim_state_dict_to_load(osd, model, optimizer)
-    optimizer.load_state_dict(osd)
-    print(f"Optimizer state loaded from {input_optimizer_file}")
+def load_model_and_tokenizer(cfg):
+    model = LlamaForCausalLM.from_pretrained(cfg.train.model)
+    
+    tokenizer = LlamaTokenizer.from_pretrained(cfg.train.model)
+    tokenizer.add_special_tokens({"pad_token": "<pad>"})
+    tokenizer.model_max_length = cfg.train.max_seq_len
+    return model, tokenizer
 
 
 def save_metadata(
@@ -185,75 +129,6 @@ def load_metadata(
     return checkpointed_step, checkpointed_epoch, to_remove
 
 
-def save_checkpoint(
-    out_dir: str,
-    accelerator: Accelerator,
-    model,
-    optimizer,
-    meta_dict,
-    tr_step,
-):
-    save_dir = os.path.join(out_dir, "checkpoints", f"checkpoint_{tr_step}")
-    FSDP.set_state_dict_type(model, StateDictType.LOCAL_STATE_DICT)
-    os.makedirs(save_dir, exist_ok=True)
-
-    # save model, optim, sched states
-
-    # save model
-    accelerator.wait_for_everyone()
-
-    state_dict = model.state_dict()
-    weights_name = f"model_rank{accelerator.process_index}.bin"
-    output_model_file = os.path.join(save_dir, weights_name)
-    print(f"Saving model to {output_model_file}")
-    torch.save(state_dict, output_model_file)
-    print(f"Model saved to {output_model_file}")
-
-    # save optim
-    accelerator.wait_for_everyone()
-
-    optim_state = FSDP.optim_state_dict(model, optimizer)
-    output_optimizer_file = f"optimizer_rank{accelerator.process_index}.bin"
-    output_optimizer_file = os.path.join(save_dir, output_optimizer_file)
-    print(f"Saving optimizer state to {output_optimizer_file}")
-    torch.save(optim_state, output_optimizer_file)
-    print(f"Optimizer state saved in {output_optimizer_file}")
-
-    # save scheduler
-    accelerator.wait_for_everyone()
-
-    for i, scheduler in enumerate(accelerator._schedulers):
-        state = scheduler.state_dict()
-        scheduler_name = f"scheduler.bin" if i == 0 else f"scheduler_{i}.bin"
-        output_scheduler_file = os.path.join(save_dir, scheduler_name)
-        torch.save(state, output_scheduler_file)
-
-    accelerator.wait_for_everyone()
-
-    # save meta dict
-    accelerator.save(meta_dict, os.path.join(save_dir, "meta_data.pkl"))
-
-    accelerator.wait_for_everyone()
-    accelerator.print("Checkpoint completed")
-
-
-# def get_latest_checkpoint_dir(folder_path):
-#     folder_pattern = re.compile(r"^checkpoint_(\d+)$")
-
-#     max_integer = -1
-#     max_folder_name = None
-
-#     for folder_name in os.listdir(folder_path):
-#         match = folder_pattern.match(folder_name)
-#         if match:
-#             current_integer = int(match.group(1))
-#             if current_integer > max_integer:
-#                 max_integer = current_integer
-#                 max_folder_name = folder_name
-
-#     return max_folder_name
-
-
 def get_latest_checkpoint_dir(folder_path):
     epoch_pattern = re.compile(r"^epoch_(\d+)$")
     folder_pattern = re.compile(r"^checkpoint_(\d+)$")
@@ -283,20 +158,20 @@ def checkpoint_exists(output_dir: str):
     return False
 
 
-def convert_to_qa(example):
-    processed_full_convo = []
-    full_convo = [i.strip() for i in example.split("<|user|>")[1:]]
-    for one_pass in full_convo:
-        if "<|ai|>" not in one_pass:
-            continue
-        user, ai = one_pass.split("<|ai|>")
-        user = user.replace("<|eos|>", "").replace("<|eod|>", "").strip()
-        ai = ai.replace("<|eos|>", "").replace("<|eod|>", "").strip()
-        processed_full_convo.append([user, ai])
-    return processed_full_convo
-
-
 def llama_two_nhs_conversion(examples, tokenizer):
+
+    def convert_to_qa(example):
+        processed_full_convo = []
+        full_convo = [i.strip() for i in example.split("<|user|>")[1:]]
+        for one_pass in full_convo:
+            if "<|ai|>" not in one_pass:
+                continue
+            user, ai = one_pass.split("<|ai|>")
+            user = user.replace("<|eos|>", "").replace("<|eod|>", "").strip()
+            ai = ai.replace("<|eos|>", "").replace("<|eod|>", "").strip()
+            processed_full_convo.append([user, ai])
+        return processed_full_convo
+
     all_labels = []
     all_input_ids = []
     all_attention_mask = []
@@ -330,16 +205,6 @@ def llama_two_nhs_conversion(examples, tokenizer):
     }
 
 
-def flatten_list_unique(ids: List[torch.Tensor], accelerator: Accelerator):
-    curr_lst = []
-    for item in ids:
-        if len(item) == 1:
-            curr_lst.append(item.int().item())
-        else:
-            curr_lst.extend(item.int().tolist())
-    return torch.tensor(list(set(curr_lst))).to(accelerator.device)
-
-
 def remove_unwanted_rows(examples, rows):
     ids = examples["id"]
     assertion_lst = []
@@ -357,6 +222,7 @@ def remove_unwanted_rows(examples, rows):
 def get_mdpi_mtb_dataloaders(
     accelerator: Accelerator,
     model: LlamaForCausalLM,
+    tokenizer: LlamaTokenizer,
     config: Config,
     to_remove: List[int],
     checkpoint: bool,
@@ -367,11 +233,6 @@ def get_mdpi_mtb_dataloaders(
     # batch sizes
     train_bs = config.train.hf_training_arguments.per_device_train_batch_size
     eval_bs = config.train.hf_training_arguments.per_device_eval_batch_size
-
-    # load tokenizer
-    tokenizer = LlamaTokenizer.from_pretrained(config.train.model)
-    tokenizer.add_special_tokens({"pad_token": "<pad>"})
-    tokenizer.model_max_length = config.train.max_seq_len
 
     if not checkpoint:
         input_embeddings = model.get_input_embeddings().weight.data
@@ -422,6 +283,28 @@ def get_mdpi_mtb_dataloaders(
         train_dataset, shuffle=True, collate_fn=dc, batch_size=train_bs
     )
     return orig_length, train_dataloader, eval_dataloader
+
+
+def reset_mdpi_mtb_dataloader(
+    tokenizer: LlamaTokenizer,
+    cfg: Config,
+):
+    train_bs = cfg.train.hf_training_arguments.per_device_train_batch_size
+    train_dataset = datasets.load_from_disk(
+        "/checkpoint/opt_test/original/clinical_llm/llama-2-7b-ft-mdpi-mtb/datasets/mdpi_mtb_processed/train"
+    )
+
+    dc = DataCollatorWithPadding(
+        tokenizer.pad_token_id,
+        cfg.train.ignore_index,
+        max_seq_len=cfg.train.max_seq_len,
+    )
+
+    train_dataloader = DataLoader(
+        train_dataset, shuffle=True, collate_fn=dc, batch_size=train_bs
+    )
+
+    return train_dataloader
 
 
 def get_nhs_dataloaders(
@@ -534,8 +417,6 @@ def get_nhs_dataloaders(
 def train_function(cfg):
     training_args = cfg.train.hf_training_arguments
     checkpoint = checkpoint_exists(training_args.output_dir)
-    if checkpoint:
-        accelerator.print("Checkpoint found")
     checkpointed_step = 0
     checkpointed_epoch = 0
     set_seed(training_args.seed)
@@ -545,9 +426,11 @@ def train_function(cfg):
     world_size = torch.distributed.get_world_size()
     rank = torch.distributed.get_rank()
     print(f"Rank: {rank}, World size: {world_size}")
+    if checkpoint:
+        accelerator.print("Checkpoint found")
 
     to_remove = []
-    model = LlamaForCausalLM.from_pretrained(cfg.train.model)
+    model, tokenizer = load_model_and_tokenizer(cfg)
     if checkpoint:
         checkpointed_step, checkpointed_epoch, to_remove = load_metadata(
             training_args.output_dir,
@@ -558,11 +441,12 @@ def train_function(cfg):
     orig_length, train_dataloader, eval_dataloader = get_mdpi_mtb_dataloaders(
         accelerator,
         model,
+        tokenizer,
         cfg,
         to_remove,
         checkpoint,
     )
-    # num_update_steps_per_epoch, train_dataloader, eval_dataloader = get_nhs_dataloaders(
+    # orig_length, train_dataloader, eval_dataloader = get_nhs_dataloaders(
     #     accelerator,
     #     model,
     #     cfg,
@@ -583,13 +467,17 @@ def train_function(cfg):
     )
 
     gradient_accumulation_steps = training_args.gradient_accumulation_steps
+    orig_length = math.ceil(orig_length / world_size)
+    # num_update_steps_per_epoch = max(
+    #     len(train_dataloader) // gradient_accumulation_steps, 1
+    # )
     num_update_steps_per_epoch = max(
-        len(train_dataloader) // gradient_accumulation_steps, 1
+        orig_length // gradient_accumulation_steps, 1
     )
 
     max_steps = math.ceil(training_args.num_train_epochs * num_update_steps_per_epoch)
     logging_steps = training_args.logging_steps
-    saving_steps = int(training_args.save_frequency * len(train_dataloader))
+    saving_steps = int(training_args.save_frequency * orig_length)
 
     optimizer = AdamW(
         params=model.parameters(),
@@ -601,18 +489,21 @@ def train_function(cfg):
     lr_scheduler = get_scheduler(
         training_args.lr_scheduler_type,
         optimizer,
-        math.ceil(max_steps * training_args.warmup_ratio * training_args.num_processes),
-        max_steps * training_args.num_processes,
+        math.ceil(max_steps * training_args.warmup_ratio * world_size),
+        max_steps * world_size,
     )
-    # num warm up steps is times num_processes because each .step() call
+    # num warm up steps is times world_size because each .step() call
     # increments the internal step count by <num_processes>
 
     accelerator.print("Optimizers and LR scheduler created")
     accelerator.print(
-        f"Original dataloader length: {orig_length}, "
-        f"per device update steps: {max_steps}, warmup steps "
+        f"Original dataloader length: {orig_length * world_size}, "
+        f"per device *update* steps: {max_steps}, warmup steps "
         f"{math.ceil(max_steps * training_args.warmup_ratio)}, " 
-        f"training for {training_args.num_train_epochs} epochs"
+        f"training for {training_args.num_train_epochs} epochs "
+        f"which is a total of "
+        f"{orig_length * training_args.num_train_epochs} "
+        f"per device iterations"
     )
 
     optimizer, lr_scheduler = accelerator.prepare(optimizer, lr_scheduler)
@@ -655,19 +546,18 @@ def train_function(cfg):
             processed_ids = torch.tensor([]).to(accelerator.device)
 
         train_dl_iterator = iter(train_dataloader)
-        curr_step = checkpointed_step
 
-        for tr_step in tqdm(
-            range(curr_step, len(train_dataloader)),
+        for step in tqdm(
+            range(len(train_dataloader)),
             disable=not accelerator.is_main_process,
             file=sys.__stdout__,
         ):
+            tr_step = checkpointed_step + step
             batch = next(train_dl_iterator)
 
             # saving
             if (
-                ((tr_step + 1) % saving_steps == 0)
-                or (tr_step == len(train_dataloader) - 1)
+                (tr_step + 1) % saving_steps == 0
             ) and training_args.checkpointing_enabled:
                 gathered_processed_ids = accelerator.gather(processed_ids)
                 meta_dict = {
@@ -719,9 +609,8 @@ def train_function(cfg):
             # logging
             if accelerator.is_main_process:
                 num_tokens_processed = (
-                    training_args.num_processes
-                    * (tr_step + 1)
-                    * (epoch + 1)
+                    world_size
+                    * (tr_step + 1 + orig_length * epoch)
                     * training_args.per_device_train_batch_size
                     * cfg.train.max_seq_len
                 ) / 1e6
@@ -733,7 +622,7 @@ def train_function(cfg):
                         "lr": lr_scheduler.get_last_lr()[0],
                     },
                     commit=commit,
-                    step=tr_step,
+                    step=tr_step + (epoch * orig_length),
                 )
 
             # evaluating
@@ -757,13 +646,18 @@ def train_function(cfg):
                             "test/loss": gathered_eval_loss / len(eval_dataloader),
                             "millions_of_tokens": num_tokens_processed,
                         },
-                        step=tr_step,
+                        step=tr_step + (epoch * orig_length),
                     )
                 model.train()
 
         if checkpoint:
             checkpointed_step = 0
             checkpoint = False
+        
+        if training_args.num_train_epochs > 1:
+            # reset dataset (add back processed ids)
+            train_dataloader = reset_mdpi_mtb_dataloader(tokenizer, cfg)
+            train_dataloader = accelerator.prepare(train_dataloader)
 
     accelerator.wait_for_everyone()
 
