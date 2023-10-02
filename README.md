@@ -14,10 +14,11 @@ Collaborators: Ethan Choi, Rahul G. Krishnan
 
 #### Installing bitsandbytes on Vector Cluster
 1. Link CUDA and CUDNN libraries. 
-We don't need these libraries, the linking in steps 1 & 2 gives us `nvcc` command the next steps depend on.
+We don't need these libraries, the symbolic linking in steps 1 & 2 gives us `nvcc` command the next steps depend on.
+Note: Many libraries that require compilation use `nvcc --version` internally, so ensure it matches with your CUDA runtime version.
 ```bash
 ln -s /scratch/ssd001/pkgs/cudnn-11.2-v8.1.1.33 ~/cudnn
-ln -s /scratch/ssd001/pkgs/cuda-11.3 ~/cuda
+ln -s /scratch/ssd001/pkgs/cuda-11.7 ~/cuda
 ```
 
 2. Modify your `LD_LIBRARY_PATH` and `PATH` in `.bashrc`
@@ -45,6 +46,9 @@ python setup.py install
 python -m bitsandbytes
 ```
 
+#### Installing FlashAttention 2.0
+1. Follow the instructions here:https://github.com/Dao-AILab/flash-attention
+2. Note: Ensure nvcc --version displays >= CUDA 11.6 for Driver version.
 
 #### References
 - We build on QLoRA: https://github.com/artidoro/qlora
