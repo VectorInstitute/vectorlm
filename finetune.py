@@ -2,6 +2,8 @@ import time
 import argparse
 from tqdm import tqdm
 import torch
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -25,12 +27,12 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name_or_path", type=str, help="HuggingFace path or model path")
     parser.add_argument("--full_finetune", default=False, type=bool, help="Finetune all parameters instead of LoRA")
-    parser.add_argument("--bits", default=8, type=int, help="bitwidth for weight quantization")
+    parser.add_argument("--bits", default=4, type=int, help="bitwidth for weight quantization")
     parser.add_argument("--bf16", default=True, type=bool, help="perform computation in bf16")
     parser.add_argument("--fp16", default=False, type=bool, help="perform computation in fp16")
     parser.add_argument("--quant_type", default="nf4", type=str, help="fp4 or nf4 weight quantization type")
     parser.add_argument("--double_quant", default=True, type=bool, help="quantize the quantization parameters")
-    parser.add_argument("--gradient_checkpointing", default=False, type=bool, help="enable grad checkpoint to reduce memory")
+    parser.add_argument("--gradient_checkpointing", default=True, type=bool, help="enable rematerialization to reduce memory")
     parser.add_argument("--use_flash_attention_2", default=True, type=bool, help="enable flash attention 2 in transformers >=4.34")
     parser.add_argument("--lora_r", default=64, type=int, help="LoRA rank")
     parser.add_argument("--lora_alpha", default=16, type=int, help="LoRA alpha")
@@ -144,6 +146,7 @@ if __name__ == "__main__":
         #     loss = out.loss
         #     loss.backward()
 
+    # TODO check if we can save a quantized checkpoint
     # TODO llama-2 must be trained in bfloat16 https://huggingface.co/docs/transformers/model_doc/llama2
     # TODO try trainer
     # 1. use the downloaded models
@@ -155,18 +158,33 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained("huggyllama/llama-7b") # https://github.com/huggingface/transformers/issues/22762
     tokenizer.pad_token = tokenizer.eos_token
 
+    # TODO figure out why oom error -> optimizer state incorrect?
+    # batch size 1/1 token: 34.5GB used on GPU (grad ckpt disabled, seems incompabile with our framework)
     training_args = TrainingArguments(
         output_dir="delete_this",
-        per_device_train_batch_size=2, # num_gpus x per_device_batch_size
+        tf32=True,
+        bf16_full_eval=True, #fp16_full_eval=True
+        gradient_checkpointing=args.gradient_checkpointing,
+        per_device_train_batch_size=8, # num_gpus x per_device_batch_size
+        #torch_compile=True, 
     )
     trainer = SFTTrainer(
-        model, # can pass in peft_config, but how do we allow compilation? might need to write our own trainer
+        model, 
         tokenizer=tokenizer,
         train_dataset=dataset,
         dataset_text_field="text",
-        max_seq_length=128,
+        max_seq_length=1024, #256 ok (29GB w grad checkpointing), 512 works, tested on: gpu191
     )
+    # TODO measure throughput with and without grad checkpoint
+    # TODO try 8 bit adam https://huggingface.co/docs/transformers/perf_train_gpu_one (save 7-14% of paramters in GPU memory)
 
-    # # TODO make DDP trainer, FSDP trainer
-    with torch.autocast(dtype=torch.bfloat16, device_type="cuda"):
+    # 1 x 256: 29GB usage.
+    # 1 x 512: 30 something GB usage.
+    # 1 x 1024: 46.7GB usage. 10s/iteration => 100 tokens/second/gpu (bad)
+    # 2 x 1024: 46.7GB usage. 12s/iteration => 170 tokens/second/gpu
+    # 4 x 1024: 46.
+    
+    with torch.autocast(dtype=torch.bfloat16, device_type="cuda"): # some misspecification of input being float instead of bfloat
         trainer.train() 
+
+    
