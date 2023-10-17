@@ -22,12 +22,12 @@ train: # Training parameters
     adam_epsilon: 1.0e-7
     num_processes: 4
     max_grad_norm: 1
-    num_train_epochs: 1
+    num_train_epochs: 5
     lr_scheduler_type: 'cosine'
     warmup_ratio: 0.05
     logging_strategy: 'steps'
     logging_steps: 500
-    save_frequency: 0.001
+    save_frequency: 0.25
     seed: 11
   wandb_config:
     project: "MedGPT"

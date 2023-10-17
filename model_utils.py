@@ -44,7 +44,7 @@ class PlateaeuWithWarmup(ReduceLROnPlateau):
         new_lr = None
         if epoch < self.num_warmup_steps:
 
-            ratio = float(epoch + 1) / float(self.num_warmup_steps)
+            ratio = float(epoch) / float(self.num_warmup_steps)
             new_lr = [ratio * lr for lr in self.base_lrs]
             self._reduce_lr(epoch, new_lr)
         else:
@@ -87,6 +87,9 @@ class PlateaeuWithWarmup(ReduceLROnPlateau):
                                     "%.5d") % epoch
                         print('Epoch {}: reducing learning rate'
                             ' of group {} to {:.4e}.'.format(epoch_str, i, new_lr))
+    
+    def get_last_lr(self):
+        return [group['lr'] for group in self.optimizer.param_groups]
 
 
 def load_model_and_tokenizer(cfg):

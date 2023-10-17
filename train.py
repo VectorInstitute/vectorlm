@@ -27,7 +27,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 import torch.distributed
 
 from data_utils import DataCollatorWithPadding, Config, pack_examples, get_mdpi_mtb_dataloaders, reset_mdpi_mtb_dataloader
-from save_utils import get_latest_checkpoint_dir, load_metadata, checkpoint_exists, gather, load_model, load_optimizer, save_model, save_consolidated_model, save_optimizer, save_metadata
+from save_utils import get_latest_checkpoint_dir, load_metadata, checkpoint_exists, gather, load_model, load_optimizer, load_scheduler, save_model, save_consolidated_model, save_optimizer, save_scheduler, save_metadata
 from model_utils import PlateaeuWithWarmup, load_model_and_tokenizer, fsdp_config, apply_activation_checkpointing
 
 
@@ -97,7 +97,6 @@ def train_function(config):
     to_remove: List[int] = []
 
     model, tokenizer = load_model_and_tokenizer(config)
-    # breakpoint()
 
     if checkpoint:
         checkpointed_step, checkpointed_epoch, to_remove = load_metadata(
@@ -144,18 +143,25 @@ def train_function(config):
         betas=(training_args.adam_beta1, training_args.adam_beta2),
     )
 
-    lr_scheduler = get_scheduler(
-        training_args.lr_scheduler_type,
+    # lr_scheduler = get_scheduler(
+    #     training_args.lr_scheduler_type,
+    #     optimizer,
+    #     math.ceil(num_update_steps_per_epoch * training_args.warmup_ratio),
+    #     max_steps,
+    # )
+    lr_scheduler = PlateaeuWithWarmup(
         optimizer,
-        math.ceil(max_steps * training_args.warmup_ratio),
-        max_steps,
+        factor=0.5,
+        patience=math.ceil(3 * (logging_steps / gradient_accumulation_steps)),
+        num_warmup_steps=math.ceil(num_update_steps_per_epoch * training_args.warmup_ratio),
     )
+    lr_scheduler.step(None)  # TODO: remove
 
     printm("Optimizers and LR scheduler created")
     printm(
         f"Original dataloader length: {orig_length * world_size}, "
         f"per device *update* steps: {max_steps}, warmup steps "
-        f"{math.ceil(max_steps * training_args.warmup_ratio)}, " 
+        f"{math.ceil(num_update_steps_per_epoch * training_args.warmup_ratio)}, "
         f"training for {training_args.num_train_epochs} epochs "
         f"which is a total of "
         f"{orig_length * training_args.num_train_epochs} "
@@ -173,9 +179,11 @@ def train_function(config):
         )
         load_model(model, save_dir, rank)
         load_optimizer(optimizer, model, save_dir, rank)
+        load_scheduler(lr_scheduler, save_dir, rank)
         dist.barrier()
         printm("All states restored")
 
+    # is_warmup: bool = True
     for epoch in range(checkpointed_epoch, training_args.num_train_epochs):
         model.train()
 
@@ -185,6 +193,7 @@ def train_function(config):
             processed_ids = torch.tensor([]).to(torch.cuda.current_device())
 
         train_dl_iterator = iter(train_dataloader)
+        curr_eval_loss = math.inf
 
         for step in tqdm(
             range(len(train_dataloader)),
@@ -193,6 +202,8 @@ def train_function(config):
         ):
             tr_step = checkpointed_step + step
             batch = next(train_dl_iterator)
+            # if tr_step > math.ceil(num_update_steps_per_epoch * training_args.warmup_ratio):
+            #     is_warmup = False
 
             # saving
             if (
@@ -212,9 +223,12 @@ def train_function(config):
                 )
                 save_model(model, save_dir, rank)
                 save_optimizer(optimizer, model, save_dir, rank)
-                save_metadata(
-                    training_args.output_dir, meta_dict, tr_step, epoch
-                )
+                save_scheduler(lr_scheduler, save_dir, rank)
+                if rank == 0:
+                    save_metadata(
+                        training_args.output_dir, meta_dict, tr_step, epoch
+                    )
+                dist.barrier()
 
             # training
             ids = batch.pop("id").to(torch.cuda.current_device())
@@ -239,7 +253,9 @@ def train_function(config):
                 (tr_step_loss / gradient_accumulation_steps).backward()
                 model.clip_grad_norm_(training_args.max_grad_norm)
                 optimizer.step()
-                lr_scheduler.step()
+                # lr_scheduler.step()
+                # if is_warmup:
+                lr_scheduler.step(curr_eval_loss)
                 printm(f"LR: {lr_scheduler.get_last_lr()[0]}")
                 optimizer.zero_grad()
             gathered_tr_step_loss = gather(tr_step_loss.reshape(1)).mean().item()
@@ -277,6 +293,9 @@ def train_function(config):
                         out = model(**batch)
                         eval_loss += out.loss
                 gathered_eval_loss = gather(eval_loss.reshape(1)).mean().item()
+                curr_eval_loss = gathered_eval_loss
+                # if not is_warmup:
+                #     lr_scheduler.step(curr_eval_loss)
                 if rank == 0:
                     printm(
                         f"Step: {tr_step}, train loss: {gathered_tr_step_loss}, eval loss: {gathered_eval_loss / len(eval_dataloader)}"
@@ -297,8 +316,13 @@ def train_function(config):
         if training_args.num_train_epochs > 1:
             # reset dataset (add back processed ids)
             train_dataloader = reset_mdpi_mtb_dataloader(tokenizer, config)
-    
-    save_consolidated_model(model, training_args.output_dir, rank)
+
+        hf_save_dir: str = None
+        if epoch == training_args.num_train_epochs - 1:
+            hf_save_dir = os.path.join(training_args.output_dir, "final-model")
+        else:
+            hf_save_dir = os.path.join(training_args.output_dir, "checkpoints", f"epoch_{epoch}", "hf_model")
+        save_consolidated_model(model, hf_save_dir, rank)
 
 if __name__ == '__main__':
     args = parse_args()

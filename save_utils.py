@@ -3,10 +3,7 @@
 # retrieved from https://github.com/facebookresearch/llama-recipes/blob/2e768b1d1deffd502180e504468edbf6859ec3e1/src/llama_recipes/model_checkpointing/checkpoint_handler.py
 # on 29th September 2023. Note that the file has been slightly modified.
 
-from pathlib import Path
-from datetime import datetime
 import torch
-import time
 import os
 import re
 
@@ -134,6 +131,7 @@ def gather(x: torch.Tensor):
 
 
 def save_model(model, output_dir, rank):
+    os.makedirs(output_dir, exist_ok=True)
     weights_name = f"model_rank{rank}.bin"
     output_model_file = os.path.join(output_dir, weights_name)
     with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
@@ -144,29 +142,29 @@ def save_model(model, output_dir, rank):
 
 
 def save_consolidated_model(model, save_dir, rank):
+    os.makedirs(save_dir, exist_ok=True)
     cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+    save_path = os.path.join(save_dir, 'model.bin')
     with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, cfg):
-        unwrapped_model = extract_model_from_parallel(model)
-        unwrapped_model.save_pretrained(
-            os.path.join(save_dir, "final-model"),
-            in_main_process=rank == 0,
-            save_function=torch.save,
-            max_shard_size="10GB",
-            state_dict=unwrapped_model.state_dict(),
-        )
-
+        state_dict = model.state_dict()
+        if rank == 0:
+            torch.save(state_dict, save_path)
 
 
 def load_model(model, input_dir, rank):
+    # weights_name = f"pytorch_model_rank{rank}.bin" #TODO: remore pytorch_
     weights_name = f"model_rank{rank}.bin"
     input_model_file = os.path.join(input_dir, weights_name)
     cfg = LocalStateDictConfig(offload_to_cpu=True)
     with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT, cfg):
         print(f"Loading model from {input_model_file}")
         state_dict = torch.load(input_model_file)
-        if rank == 0:
-            print(f'Loaded model state dict is on {state_dict.device}')
-        model.load_state_dict(state_dict)
+        from collections import OrderedDict
+        new_dict = OrderedDict()
+        for key in state_dict:
+            if 'inv_freq' not in key:
+                new_dict[key] = state_dict[key]
+        model.load_state_dict(new_dict)
         print(f"Model loaded from {input_model_file}")
 
 
@@ -189,8 +187,20 @@ def load_optimizer(optimizer, model, input_dir, rank):
     with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT, model_cfg, opt_cfg):
         print(f"Loading optimizer state from {input_optimizer_file}")
         opt_state = torch.load(input_optimizer_file)
-        if rank == 0:
-            print(f'Loaded opt state dict is on {opt_state.device}')
         opt_state = FSDP.optim_state_dict_to_load(opt_state, model, optimizer)
         optimizer.load_state_dict(opt_state)
         print(f"Optimizer state loaded from {input_optimizer_file}")
+
+
+def save_scheduler(scheduler, output_dir, rank):
+    sched_name = f"scheduler_rank{rank}.bin"
+    output_scheduler_file = os.path.join(output_dir, sched_name)
+    state_dict = scheduler.state_dict()
+    torch.save(state_dict, output_scheduler_file)
+
+
+def load_scheduler(scheduler, input_dir, rank):
+    sched_name = f"scheduler_rank{rank}.bin"
+    input_scheduler_file = os.path.join(input_dir, sched_name)
+    state_dict = torch.load(input_scheduler_file)
+    scheduler.load_state_dict(state_dict)
