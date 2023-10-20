@@ -1,3 +1,4 @@
+import os
 import time
 import argparse
 from tqdm import tqdm
@@ -79,7 +80,7 @@ def get_accelerate_model(args):
         args.model_name_or_path,
         load_in_4bit=args.bits == 4,
         load_in_8bit=args.bits == 8,
-        device_map="auto",
+        device_map={'': int(os.environ["LOCAL_RANK"])}, # do not use 'auto' for DP training, as its PP
         use_flash_attention_2=args.use_flash_attention_2,
         torch_dtype=compute_dtype,
         quantization_config=BitsAndBytesConfig(
@@ -92,8 +93,9 @@ def get_accelerate_model(args):
             bnb_4bit_quant_type=args.quant_type,
         ),
     )
-    setattr(model, 'model_parallel', True)
-    setattr(model, 'is_parallelizable', True)
+    # TODO need to disable MP
+    setattr(model, 'model_parallel', False)#True)
+    setattr(model, 'is_parallelizable', False)#True)
     model.config.torch_dtype=compute_dtype
 
     # LoRA prep
@@ -130,7 +132,7 @@ def get_accelerate_model(args):
 
 if __name__ == "__main__":
     args = parse_args()
-    model = get_accelerate_model(args)
+    model = get_accelerate_model(args) #
     # BATCH_SIZE = 16
     # SEQ_LEN = 128
     # batch = {
@@ -165,11 +167,13 @@ if __name__ == "__main__":
         tf32=True,
         bf16_full_eval=True, #fp16_full_eval=True
         gradient_checkpointing=args.gradient_checkpointing,
-        per_device_train_batch_size=8, # num_gpus x per_device_batch_size
+        per_device_train_batch_size=16, # num_gpus x per_device_batch_size
         #torch_compile=True, 
+        ddp_find_unused_parameters=False
     )
     trainer = SFTTrainer(
         model, 
+        args = training_args,
         tokenizer=tokenizer,
         train_dataset=dataset,
         dataset_text_field="text",
@@ -177,13 +181,18 @@ if __name__ == "__main__":
     )
     # TODO measure throughput with and without grad checkpoint
     # TODO try 8 bit adam https://huggingface.co/docs/transformers/perf_train_gpu_one (save 7-14% of paramters in GPU memory)
-
+    # (discard, did not test on optimal config)
     # 1 x 256: 29GB usage.
     # 1 x 512: 30 something GB usage.
     # 1 x 1024: 46.7GB usage. 10s/iteration => 100 tokens/second/gpu (bad)
-    # 2 x 1024: 46.7GB usage. 12s/iteration => 170 tokens/second/gpu
-    # 4 x 1024: 46.
+
+    # real benchmarking
+    # 30B
+    # 2 x 1024: 28.6GB, 3-5s/iteration => 400-600 tokens/second/gpu
+    # 16 x 1024: 20-25s/iteration => 600 - 800 tokens/second/gpu, 70GB usage
+    # 7B
     
+    # simpler guide: https://huggingface.co/blog/dpo-trl
     with torch.autocast(dtype=torch.bfloat16, device_type="cuda"): # some misspecification of input being float instead of bfloat
         trainer.train() 
 
