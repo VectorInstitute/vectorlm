@@ -353,10 +353,9 @@ def reset_mdpi_mtb_dataloader(
 
 
 def get_nhs_dataloaders(
-    model: LlamaForCausalLM,
-    config: Config,
-    checkpoint: bool,
-    to_remove: List[int],
+        tokenizer: LlamaTokenizer,
+        config: Config,
+        to_remove: List[int],
 ):
     """
     Returns the NHS dataset train/test dataloaders
@@ -365,23 +364,6 @@ def get_nhs_dataloaders(
     # batch sizes
     train_bs = config.train.hf_training_arguments.per_device_train_batch_size
     eval_bs = config.train.hf_training_arguments.per_device_eval_batch_size
-
-    # load tokenizer
-    tokenizer = LlamaTokenizer.from_pretrained(
-        "/ssd005/projects/llm/Llama-2-7b-chat-hf/"
-    )
-    tokenizer.add_special_tokens({"pad_token": "<pad>"})
-    tokenizer.model_max_length = config.train.max_seq_len
-
-    if not checkpoint:
-        input_embeddings = model.get_input_embeddings().weight.data
-        output_embeddings = model.get_output_embeddings().weight.data
-        input_embeddings_avg = input_embeddings[:-1].mean(dim=0, keepdim=True)
-        output_embeddings_avg = output_embeddings[:-1].mean(dim=0, keepdim=True)
-        model.resize_token_embeddings(len(tokenizer))
-        input_embeddings[-1:] = input_embeddings_avg
-        output_embeddings[-1:] = output_embeddings_avg
-    model.config.pad_token_id = tokenizer.pad_token_id
 
     # load dataset
     dataset = datasets.Dataset.from_csv(config.train.datasets)
@@ -445,8 +427,9 @@ def get_nhs_dataloaders(
             batch_size=5000,
         )
 
-    print(f"Train dataset length {len(train_dataset)} (after packing)")
-    print(f"Eval dataset length {len(test_dataset)} (no packing)")
+    if dist.get_rank() == 0:
+        print(f"Train dataset length {len(train_dataset)} (after wrapping)")
+        print(f"Eval dataset length {len(test_dataset)} (no wrapping)")
 
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, collate_fn=dc, batch_size=train_bs
