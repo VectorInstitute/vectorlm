@@ -93,9 +93,9 @@ def get_accelerate_model(args):
             bnb_4bit_quant_type=args.quant_type,
         ),
     )
-    # TODO need to disable MP
-    setattr(model, 'model_parallel', False)#True)
-    setattr(model, 'is_parallelizable', False)#True)
+    # need to disable model parallelism for DP training
+    setattr(model, 'model_parallel', False)
+    setattr(model, 'is_parallelizable', False)
     model.config.torch_dtype=compute_dtype
 
     # LoRA prep
@@ -124,76 +124,54 @@ def get_accelerate_model(args):
                 if hasattr(module, 'weight'):
                     if args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
-            
     print_trainable_parameters(args, model)
-    # model = torch.compile(model) # doesnt work
-    # TODO add flash attention
     return model
+
 
 if __name__ == "__main__":
     args = parse_args()
-    model = get_accelerate_model(args) #
-    # BATCH_SIZE = 16
-    # SEQ_LEN = 128
-    # batch = {
-    #     "input_ids": torch.randint(0, 1000, (BATCH_SIZE, SEQ_LEN)),
-    #     "attention_mask": torch.ones(BATCH_SIZE, SEQ_LEN),
-    #     "labels": torch.randint(0, 1000, (BATCH_SIZE, SEQ_LEN)),
-    # }
-    
-    # start = time.time()
-    # for i in tqdm(range(100)):
-        # with torch.autocast(dtype=torch.bfloat16, device_type="cuda"):
-        #     out = model(**batch) # TODO add in trainer
-        #     loss = out.loss
-        #     loss.backward()
+    model = get_accelerate_model(args) # QLoRA model
+    dataset = load_dataset("imdb", split="train") # dummy dataset
 
-    # TODO check if we can save a quantized checkpoint
-    # TODO llama-2 must be trained in bfloat16 https://huggingface.co/docs/transformers/model_doc/llama2
-    # TODO try trainer
-    # 1. use the downloaded models
-    # 2. try to pass that through trainer
-    
-    dataset = load_dataset("imdb", split="train")
-    # # https://huggingface.co/docs/trl/sft_trainer
-    # # TODO add custom training args
+    # we have incorrect tokenizer class for llama checkpoints, load the correct one to suppress errors
     tokenizer = AutoTokenizer.from_pretrained("huggyllama/llama-7b") # https://github.com/huggingface/transformers/issues/22762
     tokenizer.pad_token = tokenizer.eos_token
 
-    # TODO figure out why oom error -> optimizer state incorrect?
-    # batch size 1/1 token: 34.5GB used on GPU (grad ckpt disabled, seems incompabile with our framework)
     training_args = TrainingArguments(
-        output_dir="delete_this",
+        output_dir="test_output",
         tf32=True,
         bf16_full_eval=True, #fp16_full_eval=True
         gradient_checkpointing=args.gradient_checkpointing,
-        per_device_train_batch_size=16, # num_gpus x per_device_batch_size
-        #torch_compile=True, 
-        ddp_find_unused_parameters=False
+        per_device_train_batch_size=32, # num_gpus x per_device_batch_size
+        ddp_find_unused_parameters=False,
+        #torch_compile=True, # doesn't work
     )
     trainer = SFTTrainer(
-        model, 
+        model,
         args = training_args,
         tokenizer=tokenizer,
         train_dataset=dataset,
         dataset_text_field="text",
-        max_seq_length=1024, #256 ok (29GB w grad checkpointing), 512 works, tested on: gpu191
+        max_seq_length=1024,
     )
-    # TODO measure throughput with and without grad checkpoint
-    # TODO try 8 bit adam https://huggingface.co/docs/transformers/perf_train_gpu_one (save 7-14% of paramters in GPU memory)
-    # (discard, did not test on optimal config)
-    # 1 x 256: 29GB usage.
-    # 1 x 512: 30 something GB usage.
-    # 1 x 1024: 46.7GB usage. 10s/iteration => 100 tokens/second/gpu (bad)
 
-    # real benchmarking
+    # embedding is float32, must autocast back to bf16 for computation
+    with torch.autocast(dtype=torch.bfloat16, device_type="cuda"): 
+        trainer.train() 
+        
+    # TODO 8 bit adam? https://huggingface.co/docs/transformers/perf_train_gpu_one (save 7-14% of paramters in GPU memory)
+    # TODO implement quantized checkpoint
+    # TODO llama-2 must be trained in bfloat16 https://huggingface.co/docs/transformers/model_doc/llama2
+    
+    # 7B 
+    # 4 GPU x 4 x 1024: 1.7s/iteration -> 10k tokens/second
+    # [mem. saturation] 4 GPU x 32 x 1024: 13s/iteration -> 10k tokens/second (across all GPUs)
+
     # 30B
-    # 2 x 1024: 28.6GB, 3-5s/iteration => 400-600 tokens/second/gpu
-    # 16 x 1024: 20-25s/iteration => 600 - 800 tokens/second/gpu, 70GB usage
-    # 7B
+    # [mem. saturation] 16 x 1024: 20-25s/iteration => 600 - 800 tokens/second/gpu, 70GB usage
+    # 4 GPU x 16 x 1024: 25s/iteration -> 2600 tokens/second (across all GPUs)
     
     # simpler guide: https://huggingface.co/blog/dpo-trl
-    with torch.autocast(dtype=torch.bfloat16, device_type="cuda"): # some misspecification of input being float instead of bfloat
-        trainer.train() 
+    # https://huggingface.co/docs/trl/sft_trainer
 
     
