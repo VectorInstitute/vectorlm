@@ -10,3 +10,4 @@ scikit-learn==1.2.2
 sentencepiece==0.1.99
 tensorboard==2.14.0
 gpustat
+wandb
