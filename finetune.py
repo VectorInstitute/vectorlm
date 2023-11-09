@@ -23,6 +23,11 @@ from peft.tuners.lora import LoraLayer
 from datasets import load_dataset
 from trl import SFTTrainer
 
+from datasets import (
+    concatenate_datasets,
+    load_dataset,
+    load_from_disk,
+)
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -36,10 +41,12 @@ def parse_args():
     parser.add_argument("--learning_rate", default=5e-5, type=float, help="Peak learning rate")
     parser.add_argument("--warmup_ratio", default=0.10, type=float, help="Ratio of steps for linear warmup.")
     parser.add_argument("--scheduler", default="cosine", type=str, help="Learning rate scheduler.")
+    parser.add_argument("--seed", default=42, type=int, help="Randomization seed")
 
     # saving/logging parameters
     parser.add_argument("--output_dir", type=str, help="Output dir for logs and checkpoints")
-    parser.add_argument("--save_steps", type=str, default=10, help="Frequency to save model checkpoint")
+    parser.add_argument("--eval_steps", type=int, default=100, help="Frequency to run evalulation")
+    parser.add_argument("--save_steps", type=int, default=100, help="Frequency to save model checkpoint")
     parser.add_argument("--logging_steps", type=int, default=1, help="Frequency of logging")
     parser.add_argument("--report_to", type=str, default="wandb", help="Cloud logging service")
 
@@ -203,7 +210,7 @@ if __name__ == "__main__":
         print('Detected that training was already completed!')
         sys.exit(0)
     model = get_accelerate_model(args, checkpoint_dir) # QLoRA model
-    os.environ["WANDB_PROJECT"] = "<my-amazing-project>" # name your W&B project 
+    os.environ["WANDB_PROJECT"] = "MedGPT-QLoRA" # name your W&B project 
     os.environ["WANDB_LOG_MODEL"] = "checkpoint" # log all model checkpoints
     # tokenizer = get_tokenizer(args)
 
@@ -212,6 +219,15 @@ if __name__ == "__main__":
     # https://huggingface.co/datasets/ywchoi/mdpi
     # instruction tuning: 
     # Eval: use callback: https://github.com/artidoro/qlora/blob/main/qlora.py#L747 <- example
+    # from accelerate import Accelerator
+    # accelerator = Accelerator() # not used, except for wrapper method below
+    # # TODO messed up dataset implementation, need to instead preprocess, chunk to right size, and store as separate dataset
+    # with accelerator.main_process_first():
+    #     mdpi_dataset = load_from_disk("/scratch/ssd002/projects/opt_test/clinical_llm/datasets/mdpi")
+    #     #mtb_dataset = load_from_disk("/scratch/ssd002/projects/opt_test/clinical_llm/datasets/mtb")
+    #     #train_dataset = concatenate_datasets(mdpi_dataset["train"], mtb_dataset["train"])["train"].shuffle(seed=args.seed)
+    #     train_dataset = mdpi_dataset["train"].shuffle(seed=args.seed)
+    #     eval_dataset = mdpi_dataset["validation"]
 
     #train_dataset, eval_dataset = get_dataset()
     train_dataset = load_dataset("imdb", split="train") # dummy dataset
@@ -231,6 +247,7 @@ if __name__ == "__main__":
         bf16_full_eval=args.bf16,
         fp16_full_eval=args.fp16,
         lr_scheduler_type=args.scheduler,
+        seed=args.seed,
         gradient_checkpointing=args.gradient_checkpointing,
         ddp_find_unused_parameters=False,
         per_device_train_batch_size=args.batch_size_per_device,
@@ -238,6 +255,7 @@ if __name__ == "__main__":
         learning_rate=args.learning_rate,
         warmup_ratio=args.warmup_ratio,
         num_train_epochs=args.epochs,
+        eval_steps=args.eval_steps,
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
         resume_from_checkpoint=(checkpoint_dir is not None),
@@ -269,6 +287,8 @@ if __name__ == "__main__":
 
     # 30B
     # 4 A100 x 16 x 1024: 2600 tokens/s (25s/iteration)
+
+    # working on: gpu182
     
 
     
