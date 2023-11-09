@@ -219,19 +219,16 @@ if __name__ == "__main__":
     # https://huggingface.co/datasets/ywchoi/mdpi
     # instruction tuning: 
     # Eval: use callback: https://github.com/artidoro/qlora/blob/main/qlora.py#L747 <- example
-    # from accelerate import Accelerator
-    # accelerator = Accelerator() # not used, except for wrapper method below
-    # # TODO messed up dataset implementation, need to instead preprocess, chunk to right size, and store as separate dataset
-    # with accelerator.main_process_first():
-    #     mdpi_dataset = load_from_disk("/scratch/ssd002/projects/opt_test/clinical_llm/datasets/mdpi")
-    #     #mtb_dataset = load_from_disk("/scratch/ssd002/projects/opt_test/clinical_llm/datasets/mtb")
-    #     #train_dataset = concatenate_datasets(mdpi_dataset["train"], mtb_dataset["train"])["train"].shuffle(seed=args.seed)
-    #     train_dataset = mdpi_dataset["train"].shuffle(seed=args.seed)
-    #     eval_dataset = mdpi_dataset["validation"]
-
-    #train_dataset, eval_dataset = get_dataset()
-    train_dataset = load_dataset("imdb", split="train") # dummy dataset
-    eval_dataset = load_dataset("imdb", split="test") 
+    from accelerate import Accelerator
+    accelerator = Accelerator() # not used, except for wrapper method below
+    # TODO messed up dataset implementation, need to instead preprocess, chunk to right size, and store as separate dataset
+    with accelerator.main_process_first():
+        mdpi_dataset = load_from_disk("/scratch/ssd002/projects/opt_test/clinical_llm/datasets/mdpi")
+        #mtb_dataset = load_from_disk("/scratch/ssd002/projects/opt_test/clinical_llm/datasets/mtb")
+        #train_dataset = concatenate_datasets(mdpi_dataset["train"], mtb_dataset["train"])["train"].shuffle(seed=args.seed)
+        train_dataset = mdpi_dataset["train"].shuffle(seed=args.seed)
+        eval_dataset = mdpi_dataset["validation"]
+   
 
     # we have incorrect tokenizer class for llama checkpoints, load the correct one to suppress errors
     # https://github.com/huggingface/transformers/issues/22762
