@@ -20,7 +20,6 @@ from peft import (
     PeftModel,
 )
 from peft.tuners.lora import LoraLayer
-from datasets import load_dataset
 from trl import SFTTrainer
 
 from datasets import (
@@ -35,7 +34,7 @@ def parse_args():
     parser.add_argument("--model_name_or_path", type=str, help="HuggingFace path or model path")
     parser.add_argument("--full_finetune", default=False, type=bool, help="Finetune all parameters instead of LoRA")
     parser.add_argument("--max_seq_length", default=1024, type=int, help="Maximum sequence length of text")
-    parser.add_argument("--batch_size", default=128, type=int, help="Total batch size desired.")
+    parser.add_argument("--batch_size", default=128, type=int, help="Total batch size desired. Gradient accumulation is automatically calculated.")
     parser.add_argument("--batch_size_per_device", default=16, type=int, help="The maximum batch size per gpu.")
     parser.add_argument("--epochs", default=1.0, type=float, help="Number of training epochs.")
     parser.add_argument("--learning_rate", default=5e-5, type=float, help="Peak learning rate")
@@ -210,27 +209,18 @@ if __name__ == "__main__":
         print('Detected that training was already completed!')
         sys.exit(0)
     model = get_accelerate_model(args, checkpoint_dir) # QLoRA model
-    os.environ["WANDB_PROJECT"] = "MedGPT-QLoRA" # name your W&B project 
-    os.environ["WANDB_LOG_MODEL"] = "checkpoint" # log all model checkpoints
-    # tokenizer = get_tokenizer(args)
+    #os.environ["WANDB_PROJECT"] = "MedGPT-QLoRA"
 
-    # finetuning: /checkpoint/opt_test/original/clinical_llm/datasets/
-    # https://huggingface.co/datasets/ywchoi/mtb_final_ordered
-    # https://huggingface.co/datasets/ywchoi/mdpi
-    # instruction tuning: 
-    # Eval: use callback: https://github.com/artidoro/qlora/blob/main/qlora.py#L747 <- example
+    # accelerate used only for the method below
     from accelerate import Accelerator
-    accelerator = Accelerator() # not used, except for wrapper method below
-    # TODO messed up dataset implementation, need to instead preprocess, chunk to right size, and store as separate dataset
+    accelerator = Accelerator()
     with accelerator.main_process_first():
-        mdpi_dataset = load_from_disk("/scratch/ssd002/projects/opt_test/clinical_llm/datasets/mdpi")
-        #mtb_dataset = load_from_disk("/scratch/ssd002/projects/opt_test/clinical_llm/datasets/mtb")
-        #train_dataset = concatenate_datasets(mdpi_dataset["train"], mtb_dataset["train"])["train"].shuffle(seed=args.seed)
-        train_dataset = mdpi_dataset["train"].shuffle(seed=args.seed)
-        eval_dataset = mdpi_dataset["validation"]
+        ### YOUR DATASET HERE ###
+        train_dataset = # TODO
+        eval_dataset = # TODO
+        ### YOUR DATASET HERE ###
    
-
-    # we have incorrect tokenizer class for llama checkpoints, load the correct one to suppress errors
+    # load correct tokenizer
     # https://github.com/huggingface/transformers/issues/22762
     tokenizer = AutoTokenizer.from_pretrained("huggyllama/llama-7b") 
     tokenizer.pad_token = tokenizer.eos_token
@@ -252,6 +242,7 @@ if __name__ == "__main__":
         learning_rate=args.learning_rate,
         warmup_ratio=args.warmup_ratio,
         num_train_epochs=args.epochs,
+        evaluation_strategy="steps",
         eval_steps=args.eval_steps,
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
@@ -272,20 +263,6 @@ if __name__ == "__main__":
     if not args.full_finetune:
         trainer.add_callback(SavePeftModelCallback)
     trainer.train(resume_from_checkpoint=(checkpoint_dir is not None))
-
-    # Notes
-    # 1. LLaMA/LLaMA-2 must be trained in bfloat16: https://huggingface.co/docs/transformers/model_doc/llama2
-    # 2. 8 bit adam can be used to save 7-14% x num_parameters of GPU memory: https://huggingface.co/docs/transformers/perf_train_gpu_one  
-    # 3. Different types of trainer: https://huggingface.co/docs/trl/sft_trainer
-
-    # Throughput
-    # 7B
-    # 4 A100 x 32 x 1024: 10k tokens/s (13s/iteration)
-
-    # 30B
-    # 4 A100 x 16 x 1024: 2600 tokens/s (25s/iteration)
-
-    # working on: gpu182
     
 
     

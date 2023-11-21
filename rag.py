@@ -2,7 +2,7 @@ import os
 import torch
 import openai # pip install openai
 openai.api_key = "EMPTY"
-openai.api_base = "http://172.17.8.182:8000/v1"
+openai.api_base = "http://172.17.8.185:8000/v1"
 unused_model_path = "/scratch/ssd002/projects/opt_test/Llama-2-70b-chat-hf" # artifact of pip package
 # completion = openai.Completion.create(model="/scratch/ssd002/projects/opt_test/Llama-2-70b-chat-hf", prompt="San Francisco is a", max_tokens=256)
 # print(completion)
@@ -81,7 +81,11 @@ class AugmentedLLM:
                                            **kwargs)
             generations.append(out.choices[0].text) # TODO can also return logprobs for eval
         return generations
-
+    
+    def logprob(self, queries, evidence, choices, **kwargs):
+        # same as above, construct the prompt, loop through choices, get the log probability
+        pass
+        
 
 class VectorDB:
     def __init__(self, key_path: str, value_path: str, device: str = "cuda"):
