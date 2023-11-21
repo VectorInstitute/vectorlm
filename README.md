@@ -13,6 +13,11 @@ Collaborators: Ethan Choi, Rahul G. Krishnan
 
 
 #### Installing bitsandbytes on Vector Cluster
+0. Install the requirements
+```bash
+pip install -r requirements.txt
+```
+
 1. Link CUDA and CUDNN libraries. 
 We don't need these libraries, the symbolic linking in steps 1 & 2 gives us `nvcc` command the next steps depend on.
 Note: Many libraries that require compilation use `nvcc --version` internally, so ensure it matches with your CUDA runtime version.
