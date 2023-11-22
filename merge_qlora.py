@@ -12,6 +12,7 @@ from finetune import (
 
 # This script will save a full 16-bit version of LoRA adapters merged into the base model
 # intended for evaluation frameworks which requires the full model
+# adapted from: https://gist.github.com/ChrisHayduk/1a53463331f52dca205e55982baf9930
 
 def dequantize_model(model, quant_type, dtype, device="cpu"):
     # TODO support 8 bit dequantization
@@ -38,7 +39,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     checkpoint_dir, completed_training = get_last_checkpoint(args.output_dir)
-    print(checkpoint_dir, completed_training)
     if checkpoint_dir is None:
         print("*** Error: No checkpoint found ***")
         sys.exit(0)
@@ -54,7 +54,7 @@ if __name__ == "__main__":
     # The existing implementation will dequantize, add float lora weights, requantize
     # this is not wholly acceptable, because we lose the 16 bit lora adapter precision upon merge
     # we should maintain float precision: dequantize, add float lora weights, do not requantize
-    # however, it seems to work in the PR and we have conflicts with existing API if we change it
+    # however, it seems to work in the PR and we have conflicts with main branch if we change it
     merged_model = model.merge_and_unload() # merge & requant
 
     # dequant to save pretrained

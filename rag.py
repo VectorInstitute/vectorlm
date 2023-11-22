@@ -159,20 +159,6 @@ def demo_input_loop(db, embedding_model, reranker_model, rag_llm, k = 5):
             queries.append(user_input)
 
 
-class Task:
-    def __init__(self, questions: list[str], answers: list[list[str]], labels: list[str], metaprompt: str):
-        pass
-        # construct prompts based on questions, answers, and metaprompt
-
-    def evaluate(self, db, embedding_model, reranker_model, rag_llm, k = 5):
-        pass
-        # 1. construct endpoint for evaluation
-        # 2. construct API prompt
-        # TODO efficiency problem: 
-        # 1. we will need to call the API 4 times without caching, one for each target. no open-ended generation.
-        # 2. open-ended generation (limit # tokens), then check string matching. must be cheaper and more aligned to end use case.
-
-
 def main():
     print("*** Loading vector database ***")
     db = VectorDB(
