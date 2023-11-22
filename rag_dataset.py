@@ -75,8 +75,7 @@ def main():
 
     dataset_paths = find_file_dir(BASE_DIR, "dataset_info.json")
     for path in tqdm(dataset_paths):
-        target_dir = os.path.dirname(path)
-        if any(["OLD" in f for f in os.listdir(target_dir)]):
+        if any(["OLD" in f for f in os.listdir(path)]):
             print(f"Skipping {path} as it is already processed...")
             continue 
         print("*** Processing ***")
