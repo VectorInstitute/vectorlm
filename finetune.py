@@ -28,7 +28,7 @@ from datasets import (
     load_from_disk,
 )
 
-def parse_args():
+def get_parser():
     parser = argparse.ArgumentParser()
     # training parameters
     parser.add_argument("--model_name_or_path", type=str, help="HuggingFace path or model path")
@@ -59,8 +59,7 @@ def parse_args():
     parser.add_argument("--use_flash_attention_2", default=True, type=bool, help="enable flash attention 2 in transformers >=4.34")
     parser.add_argument("--lora_r", default=64, type=int, help="LoRA rank")
     parser.add_argument("--lora_alpha", default=16, type=int, help="LoRA alpha")
-    args = parser.parse_args()
-    return args
+    return parser
 
 
 def print_trainable_parameters(args, model):
@@ -99,7 +98,7 @@ def get_accelerate_model(args, checkpoint_dir):
         args.model_name_or_path,
         load_in_4bit=args.bits == 4,
         load_in_8bit=args.bits == 8,
-        device_map={'': int(os.environ["LOCAL_RANK"])}, # disable pipeline parallelism, init model on each device separately
+        device_map={'': int(os.getenv("LOCAL_RANK", 0))}, # disable pipeline parallelism, init model on each device separately
         use_flash_attention_2=args.use_flash_attention_2,
         torch_dtype=compute_dtype,
         quantization_config=BitsAndBytesConfig(
@@ -121,7 +120,7 @@ def get_accelerate_model(args, checkpoint_dir):
     if not args.full_finetune:
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=args.gradient_checkpointing)
         if checkpoint_dir is not None:
-            if int(os.environ["LOCAL_RANK"]) == 0:
+            if int(os.getenv("LOCAL_RANK", 0)) == 0:
                 print("Loading adapters from checkpoint.")
             model = PeftModel.from_pretrained(model, os.path.join(checkpoint_dir, 'adapter_model'), is_trainable=True)
         else:
@@ -147,14 +146,14 @@ def get_accelerate_model(args, checkpoint_dir):
                 if hasattr(module, 'weight'):
                     if args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
-    if int(os.environ["LOCAL_RANK"]) == 0:
+    if int(os.getenv("LOCAL_RANK", 0)) == 0:
         print_trainable_parameters(args, model)
     return model
 
 
 class SavePeftModelCallback(transformers.TrainerCallback):
     def save_model(self, args, state, kwargs):
-        if int(os.environ["LOCAL_RANK"]) == 0:
+        if int(os.getenv("LOCAL_RANK", 0)) == 0:
             print('Saving PEFT checkpoint...')
             if state.best_model_checkpoint is not None:
                 checkpoint_folder = os.path.join(state.best_model_checkpoint, "adapter_model")
@@ -191,17 +190,18 @@ def get_last_checkpoint(checkpoint_dir):
                 max_step = max(max_step, int(filename.replace('checkpoint-', '')))
         if max_step == 0: return None, is_completed # training started, but no checkpoint
         checkpoint_dir = os.path.join(checkpoint_dir, f'checkpoint-{max_step}')
-        if int(os.environ["LOCAL_RANK"]) == 0:
+        if int(os.getenv("LOCAL_RANK", 0)) == 0:
             print(f"Found a previous checkpoint at: {checkpoint_dir}")
         return checkpoint_dir, is_completed # checkpoint found!
     return None, False # first training
 
 
 if __name__ == "__main__":
-    args = parse_args()
+    parser = get_parser()
+    args = parser.parse_args()
     # calculate batch size
     assert args.batch_size % args.batch_size_per_device == 0
-    num_devices = int(os.environ["WORLD_SIZE"])
+    num_devices = int(os.getenv("WORLD_SIZE", 1))
     gradient_accumulation_steps = args.batch_size // (args.batch_size_per_device * num_devices)
     
     checkpoint_dir, completed_training = get_last_checkpoint(args.output_dir)
@@ -209,16 +209,20 @@ if __name__ == "__main__":
         print('Detected that training was already completed!')
         sys.exit(0)
     model = get_accelerate_model(args, checkpoint_dir) # QLoRA model
-    #os.environ["WANDB_PROJECT"] = "MedGPT-QLoRA"
+    os.environ["WANDB_PROJECT"] = "MedGPT-QLoRA"
 
     # accelerate used only for the method below
     from accelerate import Accelerator
     accelerator = Accelerator()
     with accelerator.main_process_first():
+
+        #########################
         ### YOUR DATASET HERE ###
-        train_dataset = # TODO
-        eval_dataset = # TODO
+        dataset = load_dataset("imdb")
+        train_dataset = dataset['train']# TODO
+        eval_dataset = dataset['test']# TODO
         ### YOUR DATASET HERE ###
+        #########################
    
     # load correct tokenizer
     # https://github.com/huggingface/transformers/issues/22762
