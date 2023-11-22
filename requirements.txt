@@ -1,5 +1,5 @@
 #bitsandbytes==0.40.0 # don't install with pip, manually compile
-git+https://github.com/huggingface/transformers@7ee995fd9c692761c4601ddbffa2ac2ec9f27b0b
+git+https://github.com/huggingface/transformers
 torch==2.0.0
 trl==0.7.1
 datasets==2.14.5
