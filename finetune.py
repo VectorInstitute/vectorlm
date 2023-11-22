@@ -183,7 +183,6 @@ class SavePeftModelCallback(transformers.TrainerCallback):
 def get_last_checkpoint(checkpoint_dir):
     if os.path.isdir(checkpoint_dir):
         is_completed = os.path.exists(os.path.join(checkpoint_dir, 'completed'))
-        if is_completed: return None, True # already finished
         max_step = 0
         for filename in os.listdir(checkpoint_dir):
             if os.path.isdir(os.path.join(checkpoint_dir, filename)) and filename.startswith('checkpoint'):
