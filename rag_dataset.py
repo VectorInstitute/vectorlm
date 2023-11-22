@@ -28,15 +28,15 @@ def replace_with_copy(old, new):
     target_dir = os.path.dirname(old)
     for f in os.listdir(target_dir):
         if "OLD" in f:
-            print(f"OLD-{os.path.basename(old)} exists, skipping caching...")
+            print(f"OLD.arrow exists, skipping caching...")
             shutil.copyfile(new, old)
             return
-    os.rename(old, os.path.join(target_dir, "OLD-" + os.path.basename(old)))
+    os.rename(old, os.path.join(target_dir, "OLD.arrow"))
     shutil.copyfile(new, old)
 
 
 def rag_prefix(example, db, embedding_model, reranker_model, k = 3, 
-               metaprompt = ""):
+               metaprompt = "The following is evidence retrieved to help answer a question:"):
     
     """Add a retrieval augmented prefix (RAG) with reranking
     to each example based on a corpus"""
@@ -46,8 +46,7 @@ def rag_prefix(example, db, embedding_model, reranker_model, k = 3,
     retrieved = db.topk_cosine(embedded_queries, k = k * 10)
     reranked = reranker_model(queries, retrieved, k = k)[0]
     prefix = metaprompt + "\n\n".join([f"[{j + 1}] " + reranked[j] for j in range(len(reranked))]) + "\n\n" + question + "\n"
-    print(prefix)
-    example["input"] = prefix + question
+    example["input"] = prefix
     return example
 
 
@@ -76,12 +75,14 @@ def main():
     dataset_paths = find_file_dir(BASE_DIR, "dataset_info.json")
     for path in tqdm(dataset_paths):
         if any(["OLD" in f for f in os.listdir(path)]):
-            print(f"Skipping {path} as it is already processed...")
+            print(f"\nSkipping {path} as it is already processed...")
             continue 
-        print("*** Processing ***")
+        print("\n*** Processing ***")
         print(path)
         dataset = load_dataset(path)
         test_split = dataset["test"].map(prefix_func)
+        print(test_split)
+    
         test_split.save_to_disk("rag_cache", num_shards=1)
 
         test_path = os.path.join(path, "mmlu-test.arrow")
