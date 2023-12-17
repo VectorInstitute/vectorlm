@@ -1,119 +1,242 @@
-from .data_utils import Config, Dataset
-from .model_utils import load_model_and_tokenizer, fsdp_config, hook_activation_checkpointing
-from torch.optim import Optimizer
-from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
-import torch
+from __future__ import annotations
+
 import math
+import os
+from typing import Any
+
+import torch
 import torch.distributed as dist
 import wandb
-from torch.distributed.fsdp.fully_sharded_data_parallel import (
-    FullyShardedDataParallel as FSDP
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
+from transformers import PreTrainedTokenizer
+
+from medgpt.utils.data_utils import Config, Dataset
+from medgpt.utils.save_utils import (
+    checkpoint_exists,
+    get_latest_checkpoint_dir,
+    load_metadata,
+    load_model,
+    load_optimizer,
+    load_scheduler,
+    save_metadata,
+    save_model,
+    save_optimizer,
+    save_scheduler,
 )
 
+
 class Trainer:
-    """Main trainer class."""
+    """Main trainer class.
+
+    Attributes
+    ----------
+        config: A training config.
+        gas: An integer number of gradient accumulation steps.
+        model: A model we are training.
+        tokenizer: A model's tokenizer.
+        optimizer: An optimizer we are using.
+        lr_scheduler: An LR scheduler for the optimizer.
+        dataset: A `Dataset` class.
+        tr_step: An integer training step.
+        metric: A metric we are tracking for model training.
+        wandb_logging: A boolean for whether we are logging using wandb.
+        logging_steps: An integer for how often we log.
+        num_update_steps_per_epoch: An integer number of training steps per
+            epoch.
+        max_steps: An integer maximum number of training steps for this run.
+        saving_steps: An integer for how often we save.
+    """
 
     def __init__(self,
             config: Config,
-            model_tokenizer_path: str,
             enable_wandb_logging: bool,
+            original_dataset_length: int,
         ) -> None:
+        """Initialize the Trainer class.
+
+        Args:
+        ----
+            config: The training config.
+            enable_wandb_logging: Whether to enable wandb logging.
+            original_dataset_length: The length of the original dataset
+                (divided by the batch size).
+        """
         self.config = config
         self.gas = config.gradient_accumulation_steps
         if self.gas < 1:
-            raise ValueError("Gradient accumulation steps need to be >=1.")
-        self.model, self.tokenizer = load_model_and_tokenizer(
-            model_tokenizer_path,
-            config.use_mp,
-            config.use_flash_attention,
-            config.max_seq_len,
-        )
-        self.optimizer = None
-        self.lr_scheduler = None
-        self.dataset = None
+            msg = "Gradient accumulation steps need to be >=1."
+            raise ValueError(msg)
         self.tr_step = 0
         self.metric = math.inf
         self.wandb_logging = enable_wandb_logging
         self.logging_steps = self.config.logging_steps
+        self.model = None
+        self.tokenizer = None
+        self.optimizer = None
+        self.lr_scheduler = None
+        self.dataset = None
         self.num_update_steps_per_epoch = None
         self.max_steps = None
         self.saving_steps = None
-    
-    @staticmethod
-    def print_main(*args, **kwargs) -> None:
-        """Print only on the main rank."""
-        if dist.is_initialized:
-            if dist.get_rank() == 0:
-                print(*args, **kwargs)
-        else:
-            print(*args, **kwargs)
-    
-    def _post_process(self) -> None:
+        self._post_process(original_dataset_length)
+
+    def _post_process(self, ds_orig_length: int) -> None:
         """Calculate steps for weight updates and saving."""
-        shard_ds_orig_len = math.ceil(
-            self.dataset.original_length / dist.get_world_size()
+        sharded_ds_orig_len = math.ceil(
+            ds_orig_length / dist.get_world_size(),
         )
-        num_update_steps_per_epoch: int = max(
-            shard_ds_orig_len // self.gas, 1
+        self.num_update_steps_per_epoch = max(
+            sharded_ds_orig_len // self.gas, 1,
         )
         self.max_steps = math.ceil(
-            self.config.epochs * num_update_steps_per_epoch
+            self.config.epochs * self.num_update_steps_per_epoch,
         )
-        self.saving_steps = int(self.config.save_frequency * shard_ds_orig_len)
+        self.saving_steps = int(
+            self.config.save_frequency * sharded_ds_orig_len,
+        )
 
-    def set_optim_and_scheduler(
+    def set_everything(
         self,
+        model: torch.nn.Module,
+        tokenizer: PreTrainedTokenizer,
+        dataset: Dataset,
         optimizer: Optimizer,
         lr_scheduler: LRScheduler | ReduceLROnPlateau,
     ) -> None:
+        """Set all essential training requirements.
+
+        Args:
+        ----
+            model: The sharded model.
+            tokenizer: The model's tokenizer.
+            dataset: The `Dataset` class.
+            optimizer: The training optimizer.
+            lr_scheduler: The LR scheduler.
         """
-        Set the optimizer and scheduler post-hoc because we can only define it
-        after model parameters are created/sharded.
-        """
+        self.model = model
+        self.tokenizer = tokenizer
+        self.dataset = dataset
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
-    
-    def set_dataset(self, dataset: Dataset) -> None:
-        """Set the dataset attribute."""
-        self.dataset = dataset
-        self._post_process()
 
-    def shard_model(self, layer_to_wrap: torch.nn.Module) -> None:
-        fsdp_cfg = fsdp_config(
-            self.config.use_mp,
-            layer_to_wrap,
-        )
-        self.model = FSDP(self.model, **fsdp_cfg)
-        print(
-            "Model sharded. Per device model parameters are ",
-            f"{sum(p.numel() for p in self.model.parameters())}",
-        )
+    def save_checkpoint(self, epoch: int) -> None:
+        """Save all states.
 
-        if self.config.use_activation_checkpointing:
-            hook_activation_checkpointing(self.model, layer_to_wrap)
-
-
-    def save_checkpoint(self) -> None:
-        pass
-
-    def load_checkpoint(self) -> None:
-        pass
-
-    def load_diff_model_weights(self, path: str) -> None:
+        Args:
+        ----
+            epoch: The current training epoch.
         """
-        Useful when going from pretraining to SFT. We only want to load in
-        the model weights, nothing else.
-        """
-        pass
+        rank = dist.get_rank()
+        gathered_processed_ids = _gather(
+            self.dataset.get_processed_ids(),
+        )
+        meta_dict = {
+            "tr_step": self.tr_step + 1,
+            "processed_ids": gathered_processed_ids,
+            "epoch": epoch,
+        }
+        save_dir = os.path.join(
+            self.config.output_dir,
+            "checkpoints",
+            f"epoch_{epoch}",
+            f"checkpoint_{self.tr_step}",
+        )
+        if rank == 0:
+            save_metadata(save_dir, meta_dict)
+        save_model(self.model, save_dir, rank)
+        save_optimizer(self.optimizer, self.model, save_dir, rank)
+        save_scheduler(self.lr_scheduler, save_dir, rank)
+        dist.barrier()
 
-    def set_train_step(self, tr_step: int) -> None:
-        self.tr_step = tr_step
+    def load_checkpoint(self, checkpoint_dir: str) -> int:
+        """Load all states.
+
+        Args:
+        ----
+            checkpoint_dir: The directory under which all checkpoints are
+                saved.
+
+        Returns:
+        -------
+            The checkpointed epoch to be used by the outer loop.
+        """
+        rank = dist.get_rank()
+        step, epoch, ids = load_metadata(checkpoint_dir)
+        self.tr_step = step
+        self.dataset.set_processed_ids(ids)
+        load_model(self.model, checkpoint_dir, rank)
+        load_optimizer(self.optimizer, self.model, checkpoint_dir, rank)
+        load_scheduler(self.lr_scheduler, checkpoint_dir, rank)
+        self.dataset.setup_dataloaders()
+        dist.barrier()
+        return epoch
+
+    def find_checkpoint(self, checkpoint_dir: str) -> int:
+        """Find and load checkpoint if it exists.
+
+        Args:
+        ----
+            checkpoint_dir: The checkpointing directory.
+
+        Returns:
+        -------
+            The checkpointed epoch. If no checkpoint exists, it returns a
+            default value of 0.
+        """
+        checkpoint = checkpoint_exists(checkpoint_dir)
+        if checkpoint:
+            main_ckpt_dir = os.path.join(checkpoint_dir, "checkpoints")
+            latest_ckpt_dir = get_latest_checkpoint_dir(main_ckpt_dir)
+            checkpointed_epoch = self.load_checkpoint(
+                os.path.join(main_ckpt_dir, latest_ckpt_dir),
+            )
+        else:
+            self.dataset.setup_dataloaders()
+            checkpointed_epoch = 0
+        return checkpointed_epoch
+
+    def step(
+        self,
+        train_batch: dict[str, torch.Tensor],
+        epoch: int,
+    ) -> tuple[float, float | None]:
+        """Step in an all-encapsulating manner.
+
+        Steps training, and if required, evals and checkpoints.
+
+        Args:
+        ----
+            train_batch: The training batch.
+            epoch: The current training epoch.
+        """
+        if (
+            self.config.checkpointing_enabled
+        ) and (
+            (self.tr_step + 1) % self.saving_steps == 0
+        ):
+                self.save_checkpoint(epoch)
+
+        train_loss = self.train_step(train_batch, epoch)
+
+        test_loss = None
+        if self.tr_step % self.logging_steps == 0:
+            test_loss = self.eval_step(epoch)
+        self.tr_step += 1
+        return train_loss, test_loss
+
 
     def train_step(self, batch: dict[str, torch.Tensor], epoch: int) -> float:
+        """Step training once.
+
+        Args:
+        ----
+            batch: The training batch.
+            epoch: The current training epoch.
+        """
         ids = batch.pop("id").to(torch.cuda.current_device())
-        batch.pop("raw_data_id") if "raw_data_id" in batch else None #TODO: remove
-        batch['input_ids'] = batch['input_ids'].type(torch.LongTensor)
-        batch['labels'] = batch['labels'].type(torch.LongTensor)
+        batch["input_ids"] = batch["input_ids"].type(torch.LongTensor)
+        batch["labels"] = batch["labels"].type(torch.LongTensor)
         self.dataset.update_processed_ids(ids)
 
         if (self.tr_step + 1) % self.gas != self.gas - 1:
@@ -135,7 +258,7 @@ class Trainer:
                 self.lr_scheduler.step(self.metric)
             else:
                 self.lr_scheduler.step()
-            self.print_main(f"LR: {self.lr_scheduler.get_last_lr()[0]}")
+            print_main(f"LR: {self.lr_scheduler.get_last_lr()[0]}")
             self.optimizer.zero_grad()
         gathered_tr_step_loss = _gather(tr_step_loss.reshape(1)).mean().item()
 
@@ -143,17 +266,22 @@ class Trainer:
             self.log(gathered_tr_step_loss, epoch, "train")
 
         return gathered_tr_step_loss
-    
+
     def eval_step(self, epoch: int) -> float:
-        self.print_main("Evaluating")
+        """Run evaluation.
+
+        Args:
+        ----
+            epoch: The current training epoch.
+        """
+        print_main("Evaluating")
         self.model.eval()
         eval_loss = torch.tensor(0.0).to(torch.cuda.current_device())
         for _, batch in enumerate(self.dataset.eval_dataloader):
             with torch.no_grad():
                 batch.pop("id")
-                batch.pop("raw_data_id") if "raw_data_id" in batch else None #TODO: remove
-                batch['input_ids'] = batch['input_ids'].type(torch.LongTensor)
-                batch['labels'] = batch['labels'].type(torch.LongTensor)
+                batch["input_ids"] = batch["input_ids"].type(torch.LongTensor)
+                batch["labels"] = batch["labels"].type(torch.LongTensor)
                 out = self.model(**batch)
                 eval_loss += out.loss
         gathered_eval_loss = _gather(eval_loss.reshape(1)).mean().item()
@@ -161,15 +289,25 @@ class Trainer:
 
         self.metric = gathered_eval_loss
 
-        self.print_main(f"Step: {self.tr_step}, eval loss: {mean_eval_loss}")
+        print_main(f"Step: {self.tr_step}, eval loss: {mean_eval_loss}")
         if self.wandb_logging:
             self.log(mean_eval_loss, epoch, "eval")
 
         self.model.train()
+        return gathered_eval_loss
 
     def log(self, loss: float, epoch: int, mode: str = "train") -> None:
-        if mode != "train" and mode != "eval":
-            raise ValueError("`mode` argument needs to be 'train' or 'eval'.")
+        """Log values.
+
+        Args:
+        ----
+            loss: The loss being logged.
+            epoch: The current training epoch.
+            mode: One of `train` or `eval`.
+        """
+        if mode not in {"train", "eval"}:
+            msg = "`mode` argument needs to be 'train' or 'eval'."
+            raise ValueError(msg)
 
         num_tokens_processed = (
             dist.get_world_size()
@@ -208,3 +346,12 @@ def _gather(x: torch.Tensor) -> torch.Tensor:
     ]
     dist.all_gather(output_tensors, x)
     return torch.cat(output_tensors, dim=0)
+
+
+def print_main(*args: list[Any], **kwargs: dict[str, Any]) -> None:
+    """Print only on the main rank."""
+    if dist.is_initialized:
+        if dist.get_rank() == 0:
+            print(*args, **kwargs)
+    else:
+        print(*args, **kwargs)

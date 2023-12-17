@@ -1,15 +1,17 @@
-import torch.distributed as dist
+from __future__ import annotations
+
 import os
+from typing import Any
+
+import torch.distributed as dist
 import wandb
 from utils.data_utils import Config
 
+
 def setup(final_model_dir: str) -> None:
-    """
-    Initialize the process group for distributed training and create
-    directories.
-    """
+    """Initialize the process group and create directories."""
     os.makedirs(
-        os.path.join(final_model_dir, "final-model"), exist_ok=True
+        os.path.join(final_model_dir, "final-model"), exist_ok=True,
     )
     dist.init_process_group("nccl")
 
@@ -19,7 +21,8 @@ def cleanup() -> None:
     dist.destroy_process_group()
 
 
-def wandb_setup(training_args: Config, **kwargs) -> None:
+def wandb_setup(training_args: Config, **kwargs: dict[str, Any]) -> None:
+    """Initialize wandb and logging metrics."""
     wandb.init(
         config=training_args.to_dict(),
         **kwargs,

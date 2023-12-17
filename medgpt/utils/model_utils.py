@@ -1,25 +1,43 @@
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
-from transformers.models.llama.modeling_llama import LlamaForCausalLM
-from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+from __future__ import annotations
+
 import functools
+from typing import Any
+
+import torch
+from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
-    checkpoint_wrapper,
     CheckpointImpl,
     apply_activation_checkpointing,
+    checkpoint_wrapper,
 )
-import torch
-from typing import Tuple, Any
+from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
+from torch.distributed.fsdp.fully_sharded_data_parallel import (
+    FullyShardedDataParallel as FSDP,
+)
+from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    PreTrainedModel,
+    PreTrainedTokenizer,
+)
+
 
 def load_model_and_tokenizer(
     path: str,
     use_mp: bool,
     use_fa: bool,
     max_seq_len: int,
-) -> Tuple[PreTrainedModel, PreTrainedTokenizer]:
-    """"""
+) -> tuple[PreTrainedModel, PreTrainedTokenizer]:
+    """Load the model and tokenizer.
 
+    Args:
+    ----
+        path: The path where the model and tokenizer are stored.
+        use_mp: Whether to use mixed-precision.
+        use_fa: Whether to use Flash Attention 2.
+        max_seq_len: The maximum sequence length.
+    """
     # load model
     model_args = {}
 
@@ -27,8 +45,9 @@ def load_model_and_tokenizer(
         model_args["torch_dtype"] = torch.bfloat16
     if use_fa:
         if not use_mp:
-            raise ValueError("Use FA with bf16 (mixed precision)")
-        model_args["use_flash_attention_2"] = True
+            msg = "Use FA with bf16 (mixed precision)"
+            raise ValueError(msg)
+        model_args["attn_implementation"] = "flash_attention_2"
     model = AutoModelForCausalLM.from_pretrained(
         path,
         **model_args,
@@ -36,16 +55,12 @@ def load_model_and_tokenizer(
 
     # load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(path)
-    if isinstance(model, LlamaForCausalLM):
-        # Llama requires us to add the pad token
-        tokenizer.add_special_tokens({"pad_token": "<PAD>"})
+    if not tokenizer.pad_token:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
     tokenizer.model_max_length = max_seq_len
 
     # extend embeddings to a multiple so we use Tensor cores
-    if "A100" in torch.cuda.get_device_name():
-        multiple = 64
-    else:
-        multiple = 8
+    multiple = 64 if "A100" in torch.cuda.get_device_name() else 8
     model.resize_token_embeddings(
         len(tokenizer),
         pad_to_multiple_of=multiple,
@@ -55,9 +70,15 @@ def load_model_and_tokenizer(
 
 def fsdp_config(
     use_mp: bool,
-    layer_to_wrap: torch.nn.Module
+    layer_to_wrap: nn.Module,
 ) -> dict[str, Any]:
-    """"""
+    """Get FSDP config.
+
+    Args:
+    ----
+        use_mp: Whether to use mixed-precision.
+        layer_to_wrap: The layer we are wrapping using FSDP.
+    """
     ret_dict = {}
     if use_mp:
         mp_policy = MixedPrecision(
@@ -79,10 +100,44 @@ def fsdp_config(
     return ret_dict
 
 
+def shard_model(
+    model: nn.Module,
+    layer_to_wrap: nn.Module,
+    use_mp: bool,
+    use_activation_checkpointing: bool,
+) -> nn.Module:
+    """Shard the model to workers using FSDP.
+
+    Args:
+    ----
+        model: The model to be sharded.
+        layer_to_wrap: The layer we are wrapping using FSDP.
+        use_mp: Whether to use mixed-precision.
+        use_activation_checkpointing: Whether to use activation checkpointing.
+    """
+    fsdp_cfg = fsdp_config(use_mp, layer_to_wrap)
+    model = FSDP(model, **fsdp_cfg)
+    print(
+        "Model sharded. Per device model parameters are ",
+        f"{sum(p.numel() for p in model.parameters())}",
+    )
+
+    if use_activation_checkpointing:
+        hook_activation_checkpointing(model, layer_to_wrap)
+    return model
+
+
 def hook_activation_checkpointing(
-    model: torch.nn.Module,
-    layer: torch.nn.Module,
+    model: nn.Module,
+    layer: nn.Module,
 ) -> None:
+    """Set activation checkpointing.
+
+    Args:
+    ----
+        model: The model we are using.
+        layer: The layer to which we hook activation checkpointing to.
+    """
     non_reentrant_wrapper = functools.partial(
         checkpoint_wrapper,
         checkpoint_impl=CheckpointImpl.NO_REENTRANT,
@@ -91,5 +146,5 @@ def hook_activation_checkpointing(
     check_fn = lambda submodule: isinstance(submodule, layer)
 
     apply_activation_checkpointing(
-        model, checkpoint_wrapper_fn=non_reentrant_wrapper, check_fn=check_fn
+        model, checkpoint_wrapper_fn=non_reentrant_wrapper, check_fn=check_fn,
     )

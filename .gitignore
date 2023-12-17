@@ -1,4 +1,5 @@
 *.out
 *.err
+*.egg-info
 __pycache__/
 wandb/

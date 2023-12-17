@@ -1,33 +1,40 @@
-from utils.data_utils import Config, Dataset
-from utils.trainer import Trainer
-from utils.optimizer_utils import get_custom_scheduler
-from utils.save_utils import save_consolidated_model
-from utils.misc_utils import setup, cleanup, wandb_setup
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 import argparse
-import os
-import wandb
-import torch.distributed as dist
-from argparse import Namespace
-from transformers import set_seed
 import math
+import os
+import sys
+from argparse import Namespace
+
 import torch
+import torch.distributed as dist
 from torch.optim import AdamW
 from tqdm import tqdm
-import sys
+from transformers import set_seed
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+
+from medgpt.utils.data_utils import Config, Dataset
+from medgpt.utils.misc_utils import cleanup, setup, wandb_setup
+from medgpt.utils.model_utils import load_model_and_tokenizer, shard_model
+from medgpt.utils.optimizer_utils import get_custom_scheduler
+from medgpt.utils.save_utils import save_consolidated_model
+from medgpt.utils.trainer import Trainer
 
 
 def parse_args() -> Namespace:
+    """Parse command-line arguments.
+
+    Returns
+    -------
+        The parsed arguments.
+    """
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output_dir", required=True)
     parser.add_argument(
-        "--yaml_path", default="configs/config.yaml", required=False
+        "--yaml_path", default="configs/config.yaml", required=False,
     )
-    parser.add_argument("--ckpt_dir", default= "", required=False)  # TODO: remove
     return parser.parse_args()
 
 
 def main(config: Config) -> None:
+    """Define the main calling function."""
     training_args = config.train_parameters
 
     # set a seed
@@ -48,54 +55,74 @@ def main(config: Config) -> None:
         wandb_setup(training_args, **config.wandb_config)
     dist.barrier()
 
-    # instantiate primitive classes
-    trainer = Trainer(
-        training_args,
+    # load model and tokenizer
+    model, tokenizer = load_model_and_tokenizer(
         config.model,
-        True,
+        training_args.use_mp,
+        training_args.use_flash_attention,
+        training_args.max_seq_len,
     )
-    trainer.shard_model(LlamaDecoderLayer) # full FSDP by default
 
+    model = shard_model(
+        model,
+        LlamaDecoderLayer,
+        training_args.use_mp,
+        training_args.use_activation_checkpointing,
+    )
+
+    # load dataset
+    dataset = Dataset(
+        config=config.dataset,
+        tokenizer=tokenizer,
+    )
+
+    # instantiate trainer
+    trainer = Trainer(
+        config=training_args,
+        enable_wandb_logging=config.enable_wandb_logging,
+        original_dataset_length=dataset.original_length,
+    )
+
+    # load optimizer
     optimizer = AdamW(
-        trainer.model.parameters(),
+        model.parameters(),
         **training_args.optimizer,
     )
 
+    # load lr scheduler
     lr_scheduler = get_custom_scheduler(
-        "cosine",
+        training_args.lr_scheduler_type,
         optimizer,
         math.ceil(
-            trainer.num_update_steps_per_epoch * training_args.warmup_ratio
+            trainer.num_update_steps_per_epoch * training_args.warmup_ratio,
         ),
         trainer.max_steps,
     )
 
-    dataset = Dataset(
-        config.dataset,
-        trainer.tokenizer
+    trainer.set_everything(
+        model,
+        tokenizer,
+        dataset,
+        optimizer,
+        lr_scheduler,
     )
 
-    trainer.set_optim_and_scheduler(optimizer, lr_scheduler)
-    trainer.set_dataset(dataset)
+    # Checkpoint check. Always call before training.
+    # If no checkpoint, it returns 0.
+    checkpointed_epoch = trainer.find_checkpoint(training_args.output_dir)
 
-    checkpointed_epoch = 0 # TODO: here for testing, remove it.
-    checkpointed_step = 0
-
-    for epoch in range(checkpointed_epoch, training_args.num_train_epochs):
+    for epoch in range(checkpointed_epoch, training_args.epochs):
         trainer.model.train()
         train_dl_iterator = iter(dataset.train_dataloader)
-        for step in tqdm(
-            range((dataset.train_dataloader)),
+        for _ in tqdm(
+            range(len(dataset.train_dataloader)),
             disable=rank != 0,
             file=sys.__stdout__,
         ):
-            tr_step = checkpointed_step + step
             batch = next(train_dl_iterator)
-            trainer.train_step(batch, epoch)
-            if tr_step % trainer.logging_steps == 0:
-                trainer.eval_step(epoch)
-    
-    if epoch == training_args.num_train_epochs - 1:
+            trainer.step(batch, epoch)
+
+    if epoch == training_args.epochs - 1:
         hf_save_dir = os.path.join(training_args.output_dir, "final-model")
     else:
         hf_save_dir = os.path.join(
@@ -109,8 +136,6 @@ def main(config: Config) -> None:
 if __name__ == "__main__":
     args = parse_args()
     config = Config(yaml_path=args.yaml_path)
-    config.train_parameters["output_dir"] = args.output_dir
-    config.train_parameters["ckpt_dir"] = args.ckpt_dir
-    setup(args.output_dir)
+    setup(config.train_parameters.output_dir)
     main(config)
     cleanup()

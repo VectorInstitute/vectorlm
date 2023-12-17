@@ -1,18 +1,13 @@
-model: /model-weights/Llama-2-7b-hf/
-# datasets:
-#   - "/h/adilasif/OpenGPT/data/example_project_data/prepared_generated_data_for_example_project.csv" 
-#   - "/h/adilasif/OpenGPT/data/nhs_uk_full/prepared_generated_data_for_nhs_uk_qa.csv"
-#   - "/h/adilasif/OpenGPT/data/nhs_uk_full/prepared_generated_data_for_nhs_uk_conversations.csv"
-#   - "/h/adilasif/OpenGPT/data/medical_tasks_gpt4/prepared_generated_data_for_medical_tasks.csv"
+model: /model-weights/Llama-2-7b-hf
+enable_wandb_logging: True
 
 wandb_config:
   project: MedGPT
-  name: Llama-2-7B-ft
+  name: test-run
 
 train_parameters:
-  max_seq_len: 1024 # Should be <= model's max sequence length
-  checkpointing_enabled: True # If we should checkpoint model training
-  num_processes: 4 # Total number of GPUs
+  output_dir: /checkpoint/opt_test/original/clinical_llm/clean_dataset_runs/test_framework
+  max_seq_len: 2048 # Should be <= model's max sequence length
   epochs: 1
   seed: 11
 
@@ -23,9 +18,7 @@ train_parameters:
 
   # Gradient norm clipping
   max_grad_norm: 1
-  lr_scheduler_type: cosine # TODO: include plataeu
-  warmup_ratio: 0.05
-  gradient_accumulation_steps: 16 # Aim for a BS of 128, forumla is: n_dev * batch_size * acc_steps
+  gradient_accumulation_steps: 8 # Aim for a BS of 128, forumla is: n_dev * batch_size * acc_steps
 
   # Optimizer
   optimizer:
@@ -35,10 +28,12 @@ train_parameters:
     eps: 1.0e-5
   
   # Scheduler
+  lr_scheduler_type: cosine # TODO: include plataeu
+  warmup_ratio: 0.05
 
   # Checkpointing
-  checkpointing_enabled: False
-  logging_steps: 100  # TODO: change to 500
+  checkpointing_enabled: False # If we should checkpoint model training
+  logging_steps: 50  # TODO: change to 500
   save_frequency: 0.25  # TODO: change to 0.25s
 
 dataset:
@@ -47,7 +42,7 @@ dataset:
   dataset_format: hf # Or json
   dataset_type: pretrain # or sft
   data_fields: text
-  eval_bs: 2 # Per device batch size
-  train_bs: 2 # Per device batch size
-  train_ds: /checkpoint/opt_test/original/clinical_llm/datasets/mdpi_mtb_processed/train/
-  test_ds: /checkpoint/opt_test/original/clinical_llm/datasets/mdpi_mtb_processed/test/
+  eval_bs: 4 # Per device batch size
+  train_bs: 4 # Per device batch size
+  train_ds: /checkpoint/opt_test/original/clinical_llm/datasets/mtb_cleaned_sft_2048/train/
+  eval_ds: /checkpoint/opt_test/original/clinical_llm/datasets/mtb_cleaned_sft_2048/test/

@@ -1,23 +1,69 @@
-from torch.optim.lr_scheduler import ReduceLROnPlateau, LRScheduler
+from __future__ import annotations
+
+from typing import Any
+
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from transformers import get_scheduler
+
 
 class PlateaeuWithWarmup(ReduceLROnPlateau):
     """Class to implement plataeu scheduling with warmup.
+
+    Attributes
+    ----------
+        optimizer: An optimizer that we are adjusting the LR of.
+        factor: A float factor by which we multiplicatively reduce LR by.
+        patience: An integer number of steps to wait before reducing LR.
+        threshold: A float threshold on the change in metric to focus only on
+            significant changes.
+        threshold_mode: A string, of either `rel` or `abs`, to calculate the
+            current best performing threshold value. See PyTorch documentation
+            for more information.
+        cooldown: An integer number of steps to wait after LR has been reduced
+            before resuming to continue checking to reduce LR.
+        min_lr: A float determining the minimum LR to reduce to.
+        eps: A float where if the difference between the old and new LR is less
+            than `eps`, the update is ignored.
+        verbose: A boolean determining whether to print a message to stdout
+            every update.
+        num_warmup_steps: An integer number of warm up steps to the maximum LR.
+            The maximum LR is determined by the number of warmup steps and the
+            current step.
+        base_lrs: A list of base LRs for the optimizer's param groups.
     """
+
     def __init__(
         self,
-        optimizer,
-        factor=0.1,
-        patience=10,
-        threshold=1e-4,
-        threshold_mode='rel',
-        cooldown=0,
-        min_lr=0,
-        eps=1e-8,
-        verbose=False,
-        num_warmup_steps=0,
+        optimizer: Optimizer,
+        factor: float = 0.1,
+        patience: int = 10,
+        threshold: float = 1e-4,
+        threshold_mode: str = "rel",
+        cooldown: int = 0,
+        min_lr: float = 0,
+        eps: float = 1e-8,
+        verbose: bool = False,
+        num_warmup_steps: int = 0,
     ) -> None:
-        """"""
+        """Initialize the PlateaeuWithWarmup scheduler class.
+
+        Arguments:
+        ---------
+            optimizer: The optimizer we are adjusting the LR of.
+            factor: The factor by which we reduce the LR by.
+            patience: The number of steps to wait before reducing LR again.
+            threshold: The threshold by which the metric must change by before
+                we reduce the LR.
+            threshold_mode: Either `rel` or `abs`. See class description.
+            cooldown: The number of steps to wait after reducing LR before
+                resuming regular operations.
+            min_lr: The minimum LR we are allowed to reduce to.
+            eps: The change in the new LR and old LR must be at least eps
+                otherwise the update is ignored.
+            verbose: Whether to print messages to stdout every LR update.
+            num_warmup_steps: The number of steps we warmup the LR for.
+        """
         super().__init__(
             optimizer=optimizer,
             factor=factor,
@@ -30,10 +76,16 @@ class PlateaeuWithWarmup(ReduceLROnPlateau):
             cooldown=cooldown,
         )
         self.num_warmup_steps = num_warmup_steps
-        self.base_lrs = [group['lr'] for group in self.optimizer.param_groups]
-        
-    def step(self, metrics, epoch=None) -> None:
-        """"""
+        self.base_lrs = [group["lr"] for group in self.optimizer.param_groups]
+
+    def step(self, metrics: float, epoch: int | None = None) -> None:
+        """Step the scheduler once.
+
+        Arguments:
+        ---------
+            metrics: The metric we are using to measure change in LR.
+            epoch: The current step.
+        """
         if epoch is None:
             epoch = self.last_epoch + 1
         self.last_epoch = epoch
@@ -61,39 +113,52 @@ class PlateaeuWithWarmup(ReduceLROnPlateau):
                 self.cooldown_counter = self.cooldown
                 self.num_bad_epochs = 0
 
-        self._last_lr = [group['lr'] for group in self.optimizer.param_groups]
-    
-    def _reduce_lr(self, epoch, new_lr=None):
+        self._last_lr = [group["lr"] for group in self.optimizer.param_groups]
+
+    def _reduce_lr(self, epoch: int, new_lr: float | None = None) -> None:
         if new_lr:
-            for i, (lr, param_group) in enumerate(zip(new_lr, self.optimizer.param_groups)):
-                param_group['lr'] = lr
+            for i, (lr, param_group) in enumerate(
+                zip(new_lr, self.optimizer.param_groups),
+            ):
+                param_group["lr"] = lr
                 if self.verbose:
                     epoch_str = ("%.2f" if isinstance(epoch, float) else
                                     "%.5d") % epoch
-                    print('Epoch {}: reducing learning rate'
-                        ' of group {} to {:.4e}.'.format(epoch_str, i, new_lr))
+                    print(f"Epoch {epoch_str}: reducing learning rate"
+                        f" of group {i} to {new_lr:.4e}.")
         else:
             for i, param_group in enumerate(self.optimizer.param_groups):
-                old_lr = float(param_group['lr'])
+                old_lr = float(param_group["lr"])
                 new_lr = max(old_lr * self.factor, self.min_lrs[i])
                 if old_lr - new_lr > self.eps:
-                    param_group['lr'] = new_lr
+                    param_group["lr"] = new_lr
                     if self.verbose:
                         epoch_str = ("%.2f" if isinstance(epoch, float) else
                                     "%.5d") % epoch
-                        print('Epoch {}: reducing learning rate'
-                            ' of group {} to {:.4e}.'.format(epoch_str, i, new_lr))
-    
+                        print(f"Epoch {epoch_str}: reducing learning rate"
+                            f" of group {i} to {new_lr:.4e}.")
+
     def get_last_lr(self) -> list[float]:
-        return [group['lr'] for group in self.optimizer.param_groups]
+        """Return the current LRs for each optimizer param group."""
+        return [group["lr"] for group in self.optimizer.param_groups]
 
 
 def get_custom_scheduler(
     name: str,
-    *args,
-    **kwargs,
+    *args: list[Any],
+    **kwargs: dict[str, Any],
 ) -> LRScheduler | ReduceLROnPlateau:
-    """
+    """Return the LR scheduler.
+
+    Return either the custom ReduceLROnPlateau scheduler, or one
+    implemented by HF. See `get_scheduler` in HF `transformers` for acceptable
+    options.
+
+    Args:
+    ----
+        name: The name of the scheduler
+        args: The scheduler specific args.
+        kwargs: The scheduler specific kwargs.
     """
     if name == "plataeu-with-warmup":
         scheduler = PlateaeuWithWarmup(*args, **kwargs)
