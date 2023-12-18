@@ -129,7 +129,7 @@ def main(config: Config) -> None:
             training_args.output_dir,
             "checkpoints",
             f"epoch_{epoch}",
-            "hf_model",
+            "end-epoch-model",
         )
     save_consolidated_model(trainer.model, hf_save_dir, rank)
 

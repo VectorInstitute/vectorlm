@@ -38,11 +38,19 @@ train_parameters:
 
 dataset:
   ignore_index: -100 # The index used to exclude a token from loss calculation
-  save_proc_ds: False # Boolean to save processed dataset. Use once to cache
-  dataset_format: hf # Or json
-  dataset_type: pretrain # or sft
-  data_fields: text
   eval_bs: 4 # Per device batch size
   train_bs: 4 # Per device batch size
   train_ds: /checkpoint/opt_test/original/clinical_llm/datasets/mtb_cleaned_sft_2048/train/
   eval_ds: /checkpoint/opt_test/original/clinical_llm/datasets/mtb_cleaned_sft_2048/test/
+
+dataset_preprocess:
+  ignore_index: -100 # The index used to exclude a token from loss calculation
+  dataset_format: hf # Or json
+  dataset_type: pretrain # or sft
+  data_field: text
+  packing_type: partial
+  add_bos_eos_tokens: True
+  from_disk: True
+  load_path: /checkpoint/opt_test/original/clinical_llm/datasets/mtb_cleaned
+  split: train
+  save_path: /checkpoint/opt_test/original/clinical_llm/datasets/test_new_processor/train
