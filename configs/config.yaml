@@ -1,4 +1,4 @@
-model: /model-weights/Llama-2-7b-hf
+model: path/to/model/
 enable_wandb_logging: True
 
 wandb_config:
@@ -6,7 +6,7 @@ wandb_config:
   name: test-run
 
 train_parameters:
-  output_dir: /checkpoint/opt_test/original/clinical_llm/clean_dataset_runs/test_framework
+  output_dir: path/to/model/save/dir
   max_seq_len: 2048 # Should be <= model's max sequence length
   epochs: 1
   seed: 11
@@ -40,8 +40,8 @@ dataset:
   ignore_index: -100 # The index used to exclude a token from loss calculation
   eval_bs: 4 # Per device batch size
   train_bs: 4 # Per device batch size
-  train_ds: /checkpoint/opt_test/original/clinical_llm/datasets/mtb_cleaned_sft_2048/train/
-  eval_ds: /checkpoint/opt_test/original/clinical_llm/datasets/mtb_cleaned_sft_2048/test/
+  train_ds: path/to/train/ds
+  eval_ds: path/to/eval/ds
 
 dataset_preprocess:
   ignore_index: -100 # The index used to exclude a token from loss calculation
@@ -51,6 +51,6 @@ dataset_preprocess:
   packing_type: partial
   add_bos_eos_tokens: True
   from_disk: True
-  load_path: /checkpoint/opt_test/original/clinical_llm/datasets/mtb_cleaned
+  load_path: path/to/unprocessed/dataset
   split: train
-  save_path: /checkpoint/opt_test/original/clinical_llm/datasets/test_new_processor/train
+  save_path: path/to/processed/dataset/save
