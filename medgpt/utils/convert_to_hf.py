@@ -22,6 +22,9 @@ def parse_args() -> Namespace:
 def converter(config: Config) -> None:
     """Define main converting function.
 
+    Takes in a consolidated model.bin (all params in one file) and converts it
+    into a HF save format.
+
     Args:
     ----
         config: The full config.
@@ -37,7 +40,7 @@ def converter(config: Config) -> None:
         config.model,
         True,
         False,
-        2048,
+        2048, # doesn't matter so hard-coded.
     )
     model.load_state_dict(state_dict)
     model.save_pretrained(
