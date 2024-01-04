@@ -16,7 +16,7 @@ def parse_args() -> Namespace:
         The parsed arguments.
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config_path", default="../configs/config.yaml")
+    parser.add_argument("--config_path", default="configs/config.yaml")
     return parser.parse_args()
 
 def converter(config: Config) -> None:

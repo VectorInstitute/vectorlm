@@ -52,7 +52,7 @@ def main(config: Config) -> None:
 
     # setup wandb
     if rank == 0:
-        wandb_setup(training_args, **config.wandb_config)
+        wandb_setup(config, **config.wandb_config)
     dist.barrier()
 
     # load model and tokenizer

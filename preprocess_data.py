@@ -213,6 +213,9 @@ def main(config: Config) -> None:
     if preprocess_args.from_disk:
         ds = datasets.load_from_disk(preprocess_args.load_path)
         if isinstance(ds, DatasetDict):
+            if not preprocess_args.get("split"):
+                msg = "Loaded dataset is a dictionary. Please specify `split`."
+                raise KeyError(msg)
             ds = ds[preprocess_args.get("split")]
     else:
         ds = datasets.load_dataset(
@@ -225,7 +228,10 @@ def main(config: Config) -> None:
             examples,
             tokenizer,
             preprocess_args.data_field,
-            add_bos_eos=preprocess_args.get("add_bos_eos_tokens", True),
+            preprocess_args.get("pre_pend"),
+            preprocess_args.get("truncate", False),
+            preprocess_args.get("seperator"),
+            preprocess_args.get("add_bos_eos_tokens", True),
         ),
         batched=True,
         batch_size=5000,
@@ -244,8 +250,8 @@ def main(config: Config) -> None:
         remove_columns=ds.column_names,
         num_proc=4,
     )
-    ds = add_indices(ds)
-    ds.save_to_disk(preprocess_args.save_path)
+    ds_train = add_indices(ds_train)
+    ds_train.save_to_disk(preprocess_args.save_path)
 
 
 if __name__ == "__main__":

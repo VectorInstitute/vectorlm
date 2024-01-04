@@ -222,11 +222,11 @@ class Dataset:
         """Load the data and create the dataloaders."""
         # filter out unwanted rows from data we've already trained on
         if len(self._processed_ids):
-            to_remove = set(self._processed_ids)
+            to_remove = set(self._processed_ids.int().tolist())
             self.train_ds = self.train_ds.filter(
                 lambda example: _remove_unwanted_rows(example, to_remove),
                 batched=True,
-                num_proc=8,
+                num_proc=4,
                 batch_size=5000,
             )
 

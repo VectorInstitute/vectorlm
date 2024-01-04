@@ -165,10 +165,10 @@ class Trainer:
         step, epoch, ids = load_metadata(checkpoint_dir)
         self.tr_step = step
         self.dataset.set_processed_ids(ids)
+        self.dataset.setup_dataloaders()
         load_model(self.model, checkpoint_dir, rank)
         load_optimizer(self.optimizer, self.model, checkpoint_dir, rank)
         load_scheduler(self.lr_scheduler, checkpoint_dir, rank)
-        self.dataset.setup_dataloaders()
         dist.barrier()
         return epoch
 
@@ -188,9 +188,9 @@ class Trainer:
         if checkpoint:
             main_ckpt_dir = os.path.join(checkpoint_dir, "checkpoints")
             latest_ckpt_dir = get_latest_checkpoint_dir(main_ckpt_dir)
-            checkpointed_epoch = self.load_checkpoint(
-                os.path.join(main_ckpt_dir, latest_ckpt_dir),
-            )
+            full_ckpt_dir = os.path.join(main_ckpt_dir, latest_ckpt_dir)
+            print_main(f"Checkpoint found at {full_ckpt_dir}")
+            checkpointed_epoch = self.load_checkpoint(full_ckpt_dir)
         else:
             self.dataset.setup_dataloaders()
             checkpointed_epoch = 0

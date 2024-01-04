@@ -21,10 +21,13 @@ def cleanup() -> None:
     dist.destroy_process_group()
 
 
-def wandb_setup(training_args: Config, **kwargs: dict[str, Any]) -> None:
+def wandb_setup(config: Config, **kwargs: dict[str, Any]) -> None:
     """Initialize wandb and logging metrics."""
+    full_config_dict = {}
+    for k, v in config.__dict__.items():
+        full_config_dict[k] = v
     wandb.init(
-        config=training_args.to_dict(),
+        config=full_config_dict,
         **kwargs,
     )
     wandb.define_metric("millions_of_tokens")

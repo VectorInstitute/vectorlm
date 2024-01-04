@@ -64,8 +64,6 @@ def load_metadata(
         A tuple containing the checkpointed step, epoch, and the processed
             training dataset ids.
     """
-    if dist.get_rank() == 0:
-        print(f"Checkpoint found at {in_dir}")
     save_path = os.path.join(in_dir, "meta_data.pkl")
     meta_dict = torch.load(save_path)
     checkpointed_step = meta_dict["tr_step"]
@@ -243,8 +241,10 @@ def save_scheduler(
     """
     sched_name = f"scheduler_rank{rank}.bin"
     output_scheduler_file = os.path.join(output_dir, sched_name)
+    print(f"Saving scheduler state to {output_scheduler_file}")
     state_dict = scheduler.state_dict()
     torch.save(state_dict, output_scheduler_file)
+    print(f"Scheduler state saved to {output_scheduler_file}")
 
 
 def load_scheduler(
@@ -262,5 +262,7 @@ def load_scheduler(
     """
     sched_name = f"scheduler_rank{rank}.bin"
     input_scheduler_file = os.path.join(input_dir, sched_name)
+    print(f"Loading scheduler state from {input_scheduler_file}")
     state_dict = torch.load(input_scheduler_file)
     scheduler.load_state_dict(state_dict)
+    print(f"Scheduler state loaded from {input_scheduler_file}")

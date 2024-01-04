@@ -39,7 +39,7 @@ def load_model_and_tokenizer(
         max_seq_len: The maximum sequence length.
     """
     # load model
-    model_args = {}
+    model_args = {"use_cache": False}
 
     if use_mp:
         model_args["torch_dtype"] = torch.bfloat16
