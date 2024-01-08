@@ -131,36 +131,45 @@ def tokenize_dataset(
 
 def pack_examples(
     examples: dict[str, list[int]],
-    chunk_size: int,
+    tokenizer: PreTrainedTokenizer,
     overlap: int = 0,
     packing_type: str = "full",
+    add_bos_eos: bool = True,
 ) -> dict[str, list[int]]:
     """Pack the tokenized dataset.
 
     Args:
     ----
         examples: The dictionary containing tokenized results.
-        chunk_size: The size used to split examples (this is set to the
-            sequence length).
+        tokenizer: The tokenizer.
         overlap: The amount of overlap between two examples while packing.
         packing_type: In `partial` packing, original individual training
             examples are chunked with the option of `overlap`. In `full`
             packing, the entire dataset is fully packed meaning that no
             empty space is left in sequences.
+        add_bos_eos: Whether to add the BOS and EOS tokens to the tokenized
+            and packed sequence.
 
     Returns:
     -------
         Same type of input dictionary, but now with examples packed.
     """
+    chunk_size = tokenizer.model_max_length
+    if add_bos_eos:
+        chunk_size -= 2  # For BOS and EOS tokens.
+        bos, eos = tokenizer.bos_token_id, tokenizer.eos_token_id
+    else:
+        bos, eos = [], []
     stride = chunk_size - overlap
     all_keys = list(examples.keys())
     if packing_type == "full":
         joined_examples = {k: sum(examples[k], []) for k in all_keys}
         total_length = len(joined_examples["input_ids"])
-        result = {}
         result = {
             k: [
-                v[i:i + chunk_size] for i in range(0, total_length, stride)
+                bos + v[i:i + chunk_size] + eos for i in range(
+                    0, total_length, stride,
+                )
             ] for k, v in joined_examples.items()
         }
     elif packing_type == "partial":
@@ -170,9 +179,9 @@ def pack_examples(
             total_length = len(examples[_key][idx])
             for key in all_keys:
                 sliced_example = [
-                    examples[key][idx][i:i + chunk_size] for i in range(
-                        0, total_length, stride,
-                    )
+                    (
+                        bos + examples[key][idx][i:i + chunk_size] + eos
+                    ) for i in range(0, total_length, stride)
                 ]
                 result[key].extend(sliced_example)
     else:
@@ -223,6 +232,23 @@ def main(config: Config) -> None:
             split=preprocess_args.get("split"),
         )
 
+    will_pack = False
+    if preprocess_args.get("packing_type"):
+        will_pack = True
+
+    if preprocess_args.get("add_bos_eos_tokens", True):
+        special_tokens_created = isinstance(
+            tokenizer.bos_token_id, int,
+        ) and isinstance(
+            tokenizer.eos_token_id, int,
+        )
+        if not special_tokens_created:
+            msg = (
+                "BOS and EOS tokens are not set in the tokenizer.",
+                "Cannot add these tokens during tokenization.",
+            )
+            raise TypeError(msg)
+
     ds = ds.map(
         lambda examples: tokenize_dataset(
             examples,
@@ -231,27 +257,30 @@ def main(config: Config) -> None:
             preprocess_args.get("pre_pend"),
             preprocess_args.get("truncate", False),
             preprocess_args.get("seperator"),
-            preprocess_args.get("add_bos_eos_tokens", True),
+            # Note that if packing, we add the special tokens after packing.
+            not will_pack and preprocess_args.get("add_bos_eos_tokens", True),
         ),
         batched=True,
         batch_size=5000,
         remove_columns=ds.column_names,
         num_proc=8,
     )
-    ds = ds.map(
-        lambda examples: pack_examples(
-            examples,
-            tokenizer.model_max_length,
-            preprocess_args.get("overlap", 0),
-            preprocess_args.packing_type,
-        ),
-        batched=True,
-        batch_size=2000,
-        remove_columns=ds.column_names,
-        num_proc=4,
-    )
-    ds_train = add_indices(ds_train)
-    ds_train.save_to_disk(preprocess_args.save_path)
+    if preprocess_args.get("packing_type"):
+        ds = ds.map(
+            lambda examples: pack_examples(
+                examples,
+                tokenizer,
+                preprocess_args.get("overlap", 0),
+                preprocess_args.packing_type,
+                will_pack and preprocess_args.get("add_bos_eos_tokens", True),
+            ),
+            batched=True,
+            batch_size=2000,
+            remove_columns=ds.column_names,
+            num_proc=4,
+        )
+    ds = add_indices(ds)
+    ds.save_to_disk(preprocess_args.save_path)
 
 
 if __name__ == "__main__":
