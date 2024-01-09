@@ -4,8 +4,8 @@ from argparse import Namespace
 
 import torch
 
-from medgpt.utils.data_utils import Config
-from medgpt.utils.model_utils import load_model_and_tokenizer
+from vectorlm.utils.data_utils import Config
+from vectorlm.utils.model_utils import load_model_and_tokenizer
 
 
 def parse_args() -> Namespace:

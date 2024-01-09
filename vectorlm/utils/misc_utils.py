@@ -5,7 +5,7 @@ from typing import Any
 
 import torch.distributed as dist
 import wandb
-from medgpt.utils.data_utils import Config
+from vectorlm.utils.data_utils import Config
 
 
 def setup(final_model_dir: str) -> None:

@@ -92,7 +92,7 @@ def fsdp_config(
         transformer_auto_wrap_policy,
         transformer_layer_cls={layer_to_wrap},
     )
-    sharding_strategy = ShardingStrategy.FULL_SHARD
+    sharding_strategy = ShardingStrategy.HYBRID_SHARD
 
     ret_dict["auto_wrap_policy"] = auto_wrap_policy
     ret_dict["sharding_strategy"] = sharding_strategy
@@ -116,6 +116,7 @@ def shard_model(
         use_activation_checkpointing: Whether to use activation checkpointing.
     """
     fsdp_cfg = fsdp_config(use_mp, layer_to_wrap)
+    print(f"FSDP config: {fsdp_cfg}")
     model = FSDP(model, **fsdp_cfg)
     print(
         "Model sharded. Per device model parameters are ",

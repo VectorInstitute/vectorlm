@@ -11,8 +11,8 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from transformers import PreTrainedTokenizer
 
-from medgpt.utils.data_utils import Config, Dataset
-from medgpt.utils.save_utils import (
+from vectorlm.utils.data_utils import Config, Dataset
+from vectorlm.utils.save_utils import (
     checkpoint_exists,
     get_latest_checkpoint_dir,
     load_metadata,

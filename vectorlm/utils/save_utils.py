@@ -4,7 +4,6 @@ import os
 import re
 
 import torch
-import torch.distributed as dist
 from torch import nn
 from torch.distributed.fsdp import (
     FullStateDictConfig,  # general model non-sharded, non-flattened params

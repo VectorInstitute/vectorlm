@@ -10,7 +10,7 @@ import datasets
 from datasets import DatasetDict
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
-from medgpt.utils.data_utils import Config
+from vectorlm.utils.data_utils import Config
 
 
 def parse_args() -> Namespace:
