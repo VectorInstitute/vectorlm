@@ -13,8 +13,8 @@
 #SBATCH --wait-all-nodes=1
 #SBATCH --time=3-00
 
-export NCCL_IB_DISABLE=1
-# export TORCH_DISTRIBUTED_DEBUG=DETAIL
+export NCCL_IB_DISABLE=1  # Our cluster does not have InfiniBand. We need to disable usage using this flag.
+# export TORCH_DISTRIBUTED_DEBUG=DETAIL  # Uncomment these flags for debugging communication
 # export TORCH_CPP_LOG_LEVEL=INFO
 
 
