@@ -40,8 +40,8 @@ We implement several training optimizations that can be reviewed under [`docs/tr
 
 ### Main Classes
 
-* [`Dataset`](medgpt/utils/data_utils.py): It loads the training and test sets as processed by data processing script above. It also sets the dataloaders and shards them across devices.
-* [`Trainer`](medgpt/utils/trainer.py): The main trainer class. It contains the model, optimizer, LR scheduler, and dataloaders. It also performs the training and evaluation steps as well as state checkpointing.
+* [`Dataset`](vectorlm/utils/data_utils.py): It loads the training and test sets as processed by data processing script above. It also sets the dataloaders and shards them across devices.
+* [`Trainer`](vectorlm/utils/trainer.py): The main trainer class. It contains the model, optimizer, LR scheduler, and dataloaders. It also performs the training and evaluation steps as well as state checkpointing.
 
 ### Example: Llama-2
 
