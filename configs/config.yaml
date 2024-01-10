@@ -1,15 +1,18 @@
-model: path/to/model/
+model: /model-weights/Llama-2-7b-chat-hf
 enable_wandb_logging: True
 
 wandb_config:
   project: MedGPT
-  name: test-run
+  name: Llama-2-7B-chat-ft-mdpi-mtb-main
 
 train_parameters:
-  output_dir: path/to/model/save/dir
-  max_seq_len: 2048 # Should be <= model's max sequence length
+  output_dir: your/output/dir
+  max_seq_len: 1024
   epochs: 1
   seed: 11
+
+  # Sharding strategy
+  sharding_strategy: FULL_SHARD
 
   # Memory
   use_mp: True
@@ -18,7 +21,7 @@ train_parameters:
 
   # Gradient norm clipping
   max_grad_norm: 1
-  gradient_accumulation_steps: 8 # Aim for a BS of 128, forumla is: n_dev * batch_size * acc_steps
+  gradient_accumulation_steps: 4
 
   # Optimizer
   optimizer:
@@ -26,31 +29,32 @@ train_parameters:
     weight_decay: 0.1
     betas: [0.9, 0.95]
     eps: 1.0e-5
-  
+
   # Scheduler
-  lr_scheduler_type: cosine # TODO: include plataeu
+  lr_scheduler_type: cosine
   warmup_ratio: 0.05
 
   # Checkpointing
-  checkpointing_enabled: False # If we should checkpoint model training
-  logging_steps: 50  # TODO: change to 500
-  save_frequency: 0.25  # TODO: change to 0.25s
+  checkpointing_enabled: True
+  logging_steps: 500
+  save_frequency: 0.25
 
 dataset:
-  ignore_index: -100 # The index used to exclude a token from loss calculation
-  eval_bs: 4 # Per device batch size
-  train_bs: 4 # Per device batch size
-  train_ds: path/to/train/ds
-  eval_ds: path/to/eval/ds
+  ignore_index: -100
+  eval_bs: 8
+  train_bs: 8
+  train_ds: your/train/ds
+  eval_ds: your/eval/ds
 
 dataset_preprocess:
-  ignore_index: -100 # The index used to exclude a token from loss calculation
-  dataset_format: hf # Or json
-  dataset_type: pretrain # or sft
+  ignore_index: -100
+  dataset_format: hf
   data_field: text
   packing_type: partial
   add_bos_eos_tokens: True
   from_disk: True
-  load_path: path/to/unprocessed/dataset
+  seperator: "Excerpt:"
+  load_path: your/unprocessed/dataset
   split: train
-  save_path: path/to/processed/dataset/save
+  save_path: dir/to/save/processed/dataset
+  truncate: False
