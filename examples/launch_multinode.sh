@@ -8,7 +8,7 @@
 #SBATCH --output=llama-2-7b.%j.out
 #SBATCH --error=llama-2-7b.%j.err
 #SBATCH --partition=a100
-#SBATCH --qos=your_assigned_qos  # CHANGE
+#SBATCH --qos=your_assigned_qos # CHANGE
 #SBATCH --open-mode=append
 #SBATCH --wait-all-nodes=1
 #SBATCH --time=3-00
@@ -33,4 +33,4 @@ srun -p $SLURM_JOB_PARTITION \
     --rdzv-endpoint $MASTER_ADDR:$MASTER_PORT \
     --rdzv-id $RDVZ_ID \
     --rdzv-backend c10d \
-    llama_example.py'
+    llama_example.py --yaml_path ../configs/config.yaml'

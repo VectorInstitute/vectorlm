@@ -68,6 +68,7 @@ def main(config: Config) -> None:
         LlamaDecoderLayer,
         training_args.use_mp,
         training_args.use_activation_checkpointing,
+        training_args.sharding_strategy,
     )
 
     # load dataset

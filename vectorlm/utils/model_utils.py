@@ -4,6 +4,7 @@ import functools
 from typing import Any
 
 import torch
+import torch.distributed as dist
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
@@ -71,6 +72,7 @@ def load_model_and_tokenizer(
 def fsdp_config(
     use_mp: bool,
     layer_to_wrap: nn.Module,
+    strategy: str,
 ) -> dict[str, Any]:
     """Get FSDP config.
 
@@ -78,7 +80,13 @@ def fsdp_config(
     ----
         use_mp: Whether to use mixed-precision.
         layer_to_wrap: The layer we are wrapping using FSDP.
+        strategy: The sharding strategy to use.
     """
+    strategy_exists = hasattr(ShardingStrategy, strategy)
+    if not strategy_exists:
+        msg = f"The sharding strategy {strategy} does not exist."
+        raise ValueError(msg)
+
     ret_dict = {}
     if use_mp:
         mp_policy = MixedPrecision(
@@ -92,7 +100,7 @@ def fsdp_config(
         transformer_auto_wrap_policy,
         transformer_layer_cls={layer_to_wrap},
     )
-    sharding_strategy = ShardingStrategy.HYBRID_SHARD
+    sharding_strategy = getattr(ShardingStrategy, strategy)
 
     ret_dict["auto_wrap_policy"] = auto_wrap_policy
     ret_dict["sharding_strategy"] = sharding_strategy
@@ -105,6 +113,7 @@ def shard_model(
     layer_to_wrap: nn.Module,
     use_mp: bool,
     use_activation_checkpointing: bool,
+    strategy: str,
 ) -> nn.Module:
     """Shard the model to workers using FSDP.
 
@@ -114,9 +123,11 @@ def shard_model(
         layer_to_wrap: The layer we are wrapping using FSDP.
         use_mp: Whether to use mixed-precision.
         use_activation_checkpointing: Whether to use activation checkpointing.
+        strategy: The sharding strategy to use.
     """
-    fsdp_cfg = fsdp_config(use_mp, layer_to_wrap)
-    print(f"FSDP config: {fsdp_cfg}")
+    fsdp_cfg = fsdp_config(use_mp, layer_to_wrap, strategy)
+    if dist.get_rank() == 0:
+        print(f"FSDP config: {fsdp_cfg}")
     model = FSDP(model, **fsdp_cfg)
     print(
         "Model sharded. Per device model parameters are ",
