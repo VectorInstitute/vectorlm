@@ -100,7 +100,7 @@ def main(config: Config) -> None:
         trainer.max_steps,
     )
 
-    trainer.set_everything(
+    trainer.prepare_trainer(
         model,
         tokenizer,
         dataset,

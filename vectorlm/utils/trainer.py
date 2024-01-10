@@ -96,7 +96,7 @@ class Trainer:
             self.config.save_frequency * sharded_ds_orig_len,
         )
 
-    def set_everything(
+    def prepare_trainer(
         self,
         model: torch.nn.Module,
         tokenizer: PreTrainedTokenizer,

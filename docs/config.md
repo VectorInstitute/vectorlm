@@ -61,7 +61,7 @@ Similar to the wandb config above, these keyword parameters are fed directly int
 * `ignore_index`: The integer index used to ignore a given token in the loss calculation. Cross-entropy loss by default uses `-100`.
 * `dataset_format`: Here for forward-compatibility.
 * `data_field`: The data field that in the dataset that will be used for training.
-* `packing_type`: Either `full` or `partial`. `full` packing concatenates the whole dataset and then chunks it. `partial` packing chunks on each individual datapoint (which can span multiple context lengths).
+* `packing_type`: Either `full` or `partial`. `full` packing concatenates the whole dataset and then chunks it. `partial` packing chunks on each individual datapoint (which can span multiple context lengths). **Note:** while packing, sometimes there are multiple tokens that should not be broken up. If they are, then the decoded format ends up being prepended with `##`. There isn't a fix for it yet, but it is something to keep in mind.
 * `overlap`: When we chunk a data point during packing, we can choose to have some overlap between the current chunk and the next chunk. This might help the model understand surrounding context during training (although this isn't something we have empirically investigated, we keep this option available to users).
 * `add_bos_eos_tokens`: Whether to add `BOS` and `EOS` tokens as defined by the respective HuggingFace tokenizer. If using packing, these will be added after packing is done, so that each chunk of size `max_seq_len` has these tokens.
 * `from_disk`: Whether we are going to be loading the dataset to preprocess from disk (the other option is to download straight from HuggingFace).
