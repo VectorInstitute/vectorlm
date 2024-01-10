@@ -13,7 +13,7 @@ It is heavily recommended that you use Flash Attention-2, please follow the inst
 
 ## Introduction
 
-VectorLM is a training package built upon HuggingFace models and PyTorch Fully Sharded Data Parallelism. The package has been built with throughput optimizations in mind, which come inherently built-in. It is targeted at largely simplifying the workflow to setup distributed schemes while training **medium-sized** models in **resource-constrained** environments. This is especially relevant to clusters where powerful GPUs are available, but are bottlenecked by interconnectivity. There are two goals of this light-weight package:
+VectorLM is a training package built upon HuggingFace models and PyTorch Fully Sharded Data Parallelism. The package has been built around throughput optimizations. It is targeted at largely simplifying the workflow to setup distributed schemes while training **medium-sized** models in **resource-constrained** environments. This is especially true for academic clusters where powerful GPUs are available, but are bottlenecked by interconnectivity. Thus, there are two goals of this light-weight package:
 * Use simple sharding strategies. FSDP is a great option for medium-sized model training. It is well maintained by the PyTorch team.
 * Employ several optimization techniques to make scaling to larger models possible whilst minimizing memory usage and communication volume. As a result, we are able to efficiently dense finetune LLMs of sizes up to 13B parameters on the Vector cluster.
 
