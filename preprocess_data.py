@@ -42,6 +42,10 @@ def validate_config(config: Config) -> None:
             msg = "`load_path` does not exist."
             raise Exception(msg)
 
+    if preprocess_args.get("truncate") and preprocess_args.get("packing_type"):
+        msg = "`truncate` and `packing_type` cannot both be set."
+        raise ValueError(msg)
+
     if (
         not preprocess_args.get("truncate")
     ) and (
