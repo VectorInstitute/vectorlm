@@ -47,6 +47,8 @@ We implement several training optimizations that can be reviewed under [`docs/tr
 
 We have provided an example script to show what a regular workflow would look like for the user. It assumes a preprocessed dataset has already been created. The [`examples/launch.sh`](examples/launch.sh) script begins dense finetuning a Llama-2 7B chat model sharded across a node of 4x A100-80GB GPUs. With the Python environment activated, this can be launched using `sbatch launch.sh`. We also provide a script to launch the same training run in a multinode setting across two A100 nodes at [`examples/launch_multinode.sh`](examples/launch_multinode.sh). Please note that hybrid sharding strategies need to be employed as you scale to multinode settings to minimize communication bottlenecks. More information regarding this can be found in [`docs/config.md`](docs/config.md).
 
+At the end of training, a consolidated model will be saved under your output directory as a `.bin` file. You can simply just run [`vectorlm/utils/convert_to_hf.py`](vectorlm/utils/convert_to_hf.py) to convert it to the regular HuggingFace model format. The script uses the main config file to determine save locations.
+
 # Contributors
 Adil Asif, Ziwen Han, John Willes
 
