@@ -161,7 +161,7 @@ def pack_examples(
     chunk_size = tokenizer.model_max_length
     if add_bos_eos:
         chunk_size -= 2  # For BOS and EOS tokens.
-        bos, eos = tokenizer.bos_token_id, tokenizer.eos_token_id
+        bos, eos = [tokenizer.bos_token_id], [tokenizer.eos_token_id]
     else:
         bos, eos = [], []
     stride = chunk_size - overlap
@@ -265,9 +265,9 @@ def main(config: Config) -> None:
             not will_pack and preprocess_args.get("add_bos_eos_tokens", True),
         ),
         batched=True,
-        batch_size=5000,
+        batch_size=250,
         remove_columns=ds.column_names,
-        num_proc=8,
+        num_proc=32,
     )
     if preprocess_args.get("packing_type"):
         ds = ds.map(
@@ -281,10 +281,10 @@ def main(config: Config) -> None:
             batched=True,
             batch_size=2000,
             remove_columns=ds.column_names,
-            num_proc=4,
+            num_proc=8,
         )
     ds = add_indices(ds)
-    ds.save_to_disk(preprocess_args.save_path)
+    ds.save_to_disk(preprocess_args.save_path, max_shard_size="1GB")
 
 
 if __name__ == "__main__":
