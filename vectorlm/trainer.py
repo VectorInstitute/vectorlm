@@ -6,12 +6,13 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-import wandb
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from transformers import PreTrainedTokenizer
 
-from vectorlm.utils.data_utils import Config, Dataset
+import wandb
+from vectorlm.dataset import Dataset
+from vectorlm.utils.data_utils import Config
 from vectorlm.utils.save_utils import (
     checkpoint_exists,
     get_latest_checkpoint_dir,

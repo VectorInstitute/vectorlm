@@ -11,12 +11,13 @@ from tqdm import tqdm
 from transformers import set_seed
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
-from vectorlm.utils.data_utils import Config, Dataset
+from vectorlm.dataset import Dataset
+from vectorlm.trainer import Trainer
+from vectorlm.utils.data_utils import Config
 from vectorlm.utils.misc_utils import cleanup, setup, wandb_setup
 from vectorlm.utils.model_utils import load_model_and_tokenizer, shard_model
 from vectorlm.utils.optimizer_utils import get_custom_scheduler
 from vectorlm.utils.save_utils import save_consolidated_model
-from vectorlm.utils.trainer import Trainer
 
 
 def parse_args() -> Namespace:

@@ -1,5 +1,13 @@
 # VectorLM
+
+## Pre-release Notes
+
+Please note that the package is currently in pre-release. There are things that are heavily subject to moving around as we finish polishing the package.
+
+We are actively looking for feedback from end-users! Feature requests and suggestions are welcome.
+
 ## Installation
+
 Clone the repository and create a new Python virtual environment. Note that the package is tested with Python >= 3.10.
 
 We need to install the CUDA 11.8 wheel of PyTorch because it now ships with CUDA 12 (Vector GPUs are currently on CUDA 11).
@@ -49,7 +57,11 @@ We have provided an example script to show what a regular workflow would look li
 
 At the end of training, a consolidated model will be saved under your output directory as a `.bin` file. You can simply just run [`vectorlm/utils/convert_to_hf.py`](vectorlm/utils/convert_to_hf.py) to convert it to the regular HuggingFace model format. The script uses the main config file to determine save locations.
 
+## Roadmap
+- PEFT methods (LoRA).
+
 # Contributors
+
 Adil Asif, Ziwen Han, John Willes
 
 LLM Infrastructure Team, Vector Institute.

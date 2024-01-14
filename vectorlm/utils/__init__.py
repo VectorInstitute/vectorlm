@@ -1,5 +1,5 @@
 from .convert_to_hf import converter
-from .data_utils import Config, Dataset
+from .data_utils import Config
 from .misc_utils import cleanup, setup, wandb_setup
 from .model_utils import (
     fsdp_config,
@@ -21,4 +21,3 @@ from .save_utils import (
     save_optimizer,
     save_scheduler,
 )
-from .trainer import Trainer
