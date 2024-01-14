@@ -1,0 +1,6 @@
+datasets
+transformers
+sentencepiece
+tqdm
+wandb
+python-box
