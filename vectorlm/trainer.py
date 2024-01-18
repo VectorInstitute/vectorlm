@@ -351,7 +351,7 @@ def _gather(x: torch.Tensor) -> torch.Tensor:
 
 def print_main(*args: list[Any], **kwargs: dict[str, Any]) -> None:
     """Print only on the main rank."""
-    if dist.is_initialized:
+    if dist.is_initialized():
         if dist.get_rank() == 0:
             print(*args, **kwargs)
     else:
