@@ -36,7 +36,7 @@ def load_peft_model_and_tokenizer(
     config: PeftConfig | None = None,
     **kwargs: Any,
 ) -> tuple[PeftModel, PreTrainedTokenizer]:
-    """Loads a PEFT adapter to the base model and returns the PeftModel
+    """Loads a trained PEFT adapter (e.g. using LORA) to the base model and returns the PeftModel
         E.g., a base llama-2-13b-chat-hf w/ adapter named nifty
         ├── adapters_lora
             ├── llama-2-13b-chat-hf+nifty
