@@ -1,5 +1,7 @@
 # VectorLM
 
+AI Engineering Team, Vector Institute.
+
 ## Pre-release Notes
 
 Please note that the package is currently in pre-release. There are things that are heavily subject to moving around as we finish polishing the package.
@@ -62,6 +64,4 @@ At the end of training, a consolidated model will be saved under your output dir
 
 # Contributors
 
-Adil Asif, Ziwen Han, John Willes
-
-LLM Infrastructure Team, Vector Institute.
+Adil Asif, Ziwen Han, John Willes.
