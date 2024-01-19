@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import functools
-from typing import Any
+from typing import Any, Optional, List, Dict, Tuple
 
 import torch
 import torch.distributed as dist
@@ -22,14 +22,45 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizer,
 )
+from peft import (
+    LoraConfig,
+    LoraModel,
+    get_peft_model,
+    PeftModel,
+    PeftConfig,
+    PeftModelForCausalLM,
+)
 
+def load_peft_model_and_tokenizer(
+    path: str,
+    use_mp: bool,
+    use_fa: bool,
+    max_seq_len: int,
+    peft_adapter_path: str,
+    adapter_name: str = "default",
+    is_trainable: bool = False,
+    config: Optional[PeftConfig] = None,
+    **kwargs: Any
+) -> Tuple[PeftModel, PreTrainedTokenizer]:
+    """Loads a PEFT adapter to the base model and returns the PeftModel
+    E.g., a base llama-2-13b-chat-hf w/ adapter named nifty
+    ├── adapters_lora
+        ├── llama-2-13b-chat-hf+nifty
+    Args:
+    ----
+        peft_adapter_path: path to the adapter model, e.g. adapters_lora/llama-2-13b-chat-hf+nifty
+        adapter_name: e.g. nifty
+    """
+    model, tokenizer = load_model_and_tokenizer(path, use_mp, use_fa, max_seq_len)
+    peft_model = PeftModel.from_pretrained(model, peft_adapter_path, adapter_name, is_trainable, config=config, **kwargs)
+    return peft_model
 
 def load_model_and_tokenizer(
     path: str,
     use_mp: bool,
     use_fa: bool,
     max_seq_len: int,
-) -> tuple[PreTrainedModel, PreTrainedTokenizer]:
+) -> Tuple[PreTrainedModel, PreTrainedTokenizer]:
     """Load the model and tokenizer.
 
     Args:
