@@ -57,7 +57,6 @@ class Dataset:
     def reset_dataloaders(self) -> None:
         """Reset dataloaders."""
         self._processed_ids = torch.tensor([]).to(torch.cuda.current_device())
-        self.setup_dataloaders()
 
     def update_processed_ids(self, new_ids: torch.Tensor) -> None:
         """Update processed ids with an incoming stream of ids."""
