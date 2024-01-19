@@ -1,0 +1,3 @@
+
+# Ruff linter for fast and opinionated linting
+ruff>=0.1.13

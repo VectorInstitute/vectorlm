@@ -19,8 +19,14 @@ export RDVZ_ID=$RANDOM
 echo "RDZV Endpoint $MASTER_ADDR:$MASTER_PORT"
 
 export NCCL_IB_DISABLE=1  # Our cluster does not have InfiniBand. We need to disable usage using this flag.
+export NCCL_DEBUG=WARN
+export NCCL_DEBUG_SUBSYS=WARN
+
 # export TORCH_DISTRIBUTED_DEBUG=DETAIL  # Uncomment these flags for debugging communication
 # export TORCH_CPP_LOG_LEVEL=INFO
+export LOGLEVEL=INFO
+export PYTHONFAULTHANDLER=1
+# export CUDA_LAUNCH_BLOCKING=0
 
 srun -p $SLURM_JOB_PARTITION \
     -c $SLURM_CPUS_ON_NODE \
