@@ -6,7 +6,7 @@ TL;DR: we have gone from a throughput of **~1,500 tokens/s** to **~24,000 tokens
 
 ## Naive FSDP
 
-A `FULL_SHARD` (see [docs/config.md](../docs/config.md) for more information on what this is) across 8 A100s (2 nodes) with slow interconnect causes a severe communication bottleneck. The expensive all-gathers and reduce-scatters are happening over 50 Gbps interconnect which greatly slows throughput. With just employing mixed-precision, we had a throughput of ~1,500 tokens/s here.
+A `FULL_SHARD` (see [docs/config.md](../docs/config.md) for more information on what this is) across 8 A100s (4 GPUs/node) with slow interconnect causes a severe communication bottleneck. The expensive all-gathers and reduce-scatters are happening over 50 Gbps interconnect which greatly slows throughput. With just employing mixed-precision, we had a throughput of ~1,500 tokens/s here.
 
 ## Mixed Precision
 
