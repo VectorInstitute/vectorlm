@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import functools
-from typing import Any, Optional, List, Dict, Tuple
+from typing import Any
 
 import torch
 import torch.distributed as dist
+from peft import PeftConfig, PeftModel
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
@@ -22,14 +23,7 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizer,
 )
-from peft import (
-    LoraConfig,
-    LoraModel,
-    get_peft_model,
-    PeftModel,
-    PeftConfig,
-    PeftModelForCausalLM,
-)
+
 
 def load_peft_model_and_tokenizer(
     path: str,
@@ -39,17 +33,24 @@ def load_peft_model_and_tokenizer(
     peft_adapter_path: str,
     adapter_name: str = "default",
     is_trainable: bool = False,
-    config: Optional[PeftConfig] = None,
-    **kwargs: Any
-) -> Tuple[PeftModel, PreTrainedTokenizer]:
+    config: PeftConfig | None = None,
+    **kwargs: Any,
+) -> tuple[PeftModel, PreTrainedTokenizer]:
     """Loads a PEFT adapter to the base model and returns the PeftModel
-    E.g., a base llama-2-13b-chat-hf w/ adapter named nifty
-    ├── adapters_lora
-        ├── llama-2-13b-chat-hf+nifty
+        E.g., a base llama-2-13b-chat-hf w/ adapter named nifty
+        ├── adapters_lora
+            ├── llama-2-13b-chat-hf+nifty
+
     Args:
     ----
+        path: The path where the model and tokenizer are stored.
+        use_mp: Whether to use mixed-precision.
+        use_fa: Whether to use Flash Attention 2.
+        max_seq_len: The maximum sequence length.
         peft_adapter_path: path to the adapter model, e.g. adapters_lora/llama-2-13b-chat-hf+nifty
         adapter_name: e.g. nifty
+        is_trainable: train or inference mode
+        config: additional configs
     """
     model, tokenizer = load_model_and_tokenizer(path, use_mp, use_fa, max_seq_len)
     peft_model = PeftModel.from_pretrained(model, peft_adapter_path, adapter_name, is_trainable, config=config, **kwargs)
@@ -60,7 +61,7 @@ def load_model_and_tokenizer(
     use_mp: bool,
     use_fa: bool,
     max_seq_len: int,
-) -> Tuple[PreTrainedModel, PreTrainedTokenizer]:
+) -> tuple[PreTrainedModel, PreTrainedTokenizer]:
     """Load the model and tokenizer.
 
     Args:

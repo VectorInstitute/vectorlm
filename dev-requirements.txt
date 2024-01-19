@@ -1,0 +1,5 @@
+# Automatic formatting of imports
+isort>=5.12.0
+
+# Ruff linter for fast and opinionated linting
+ruff
