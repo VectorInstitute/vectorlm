@@ -34,12 +34,12 @@ def load_peft_model_and_tokenizer(
     adapter_name: str = "default",
     is_trainable: bool = False,
     config: PeftConfig | None = None,
-    **kwargs: Any,
 ) -> tuple[PeftModel, PreTrainedTokenizer]:
-    """Loads a trained PEFT adapter (e.g. using LORA) to the base model and returns the PeftModel
-        E.g., a base llama-2-13b-chat-hf w/ adapter named nifty
-        ├── adapters_lora
-            ├── llama-2-13b-chat-hf+nifty
+    """Load a trained PEFT adapter to the base model and return the PeftModel.
+
+    E.g., a base llama-2-13b-chat-hf w/ adapter named nifty
+    ├── adapters_lora
+        ├── llama-2-13b-chat-hf+nifty
 
     Args:
     ----
@@ -47,14 +47,30 @@ def load_peft_model_and_tokenizer(
         use_mp: Whether to use mixed-precision.
         use_fa: Whether to use Flash Attention 2.
         max_seq_len: The maximum sequence length.
-        peft_adapter_path: path to the adapter model, e.g. adapters_lora/llama-2-13b-chat-hf+nifty
+        peft_adapter_path: path to the adapter model, e.g.
+            adapters_lora/llama-2-13b-chat-hf+nifty
         adapter_name: e.g. nifty
         is_trainable: train or inference mode
         config: additional configs
+
+    Returns:
+    -------
+        The PEFT model and tokenizer.
     """
-    model, tokenizer = load_model_and_tokenizer(path, use_mp, use_fa, max_seq_len)
-    peft_model = PeftModel.from_pretrained(model, peft_adapter_path, adapter_name, is_trainable, config=config, **kwargs)
-    return peft_model
+    model, tokenizer = load_model_and_tokenizer(
+        path,
+        use_mp,
+        use_fa,
+        max_seq_len,
+    )
+    peft_model = PeftModel.from_pretrained(
+        model,
+        peft_adapter_path,
+        adapter_name,
+        is_trainable,
+        config,
+    )
+    return peft_model, tokenizer
 
 def load_model_and_tokenizer(
     path: str,
@@ -70,6 +86,10 @@ def load_model_and_tokenizer(
         use_mp: Whether to use mixed-precision.
         use_fa: Whether to use Flash Attention 2.
         max_seq_len: The maximum sequence length.
+
+    Returns:
+    -------
+        The model and tokenizer.
     """
     # load model
     model_args = {"use_cache": False}
@@ -113,6 +133,10 @@ def fsdp_config(
         use_mp: Whether to use mixed-precision.
         layer_to_wrap: The layer we are wrapping using FSDP.
         strategy: The sharding strategy to use.
+
+    Returns:
+    -------
+        A dictionary containing the configurations.
     """
     strategy_exists = hasattr(ShardingStrategy, strategy)
     if not strategy_exists:
@@ -156,6 +180,10 @@ def shard_model(
         use_mp: Whether to use mixed-precision.
         use_activation_checkpointing: Whether to use activation checkpointing.
         strategy: The sharding strategy to use.
+
+    Returns:
+    -------
+        The sharded module with the requested configurations.
     """
     fsdp_cfg = fsdp_config(use_mp, layer_to_wrap, strategy)
     if dist.get_rank() == 0:
