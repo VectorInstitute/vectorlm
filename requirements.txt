@@ -4,3 +4,4 @@ sentencepiece
 tqdm
 wandb
 python-box
+peft
