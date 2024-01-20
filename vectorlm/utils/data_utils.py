@@ -129,7 +129,6 @@ class DataCollatorWithPadding:
         batch["input_ids"] = input_ids
         batch["labels"] = labels
         batch["attention_mask"] = batch["input_ids"].ne(self.pad_token_id)
-        # print(batch["attention_mask"])
         return batch
 
     def _reverse_tensor(

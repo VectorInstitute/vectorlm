@@ -159,6 +159,9 @@ def get_custom_scheduler(
         name: The name of the scheduler
         args: The scheduler specific args.
         kwargs: The scheduler specific kwargs.
+    
+    Returns:
+        The scheduler.
     """
     if name == "plataeu-with-warmup":
         scheduler = PlateaeuWithWarmup(*args, **kwargs)

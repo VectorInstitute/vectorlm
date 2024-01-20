@@ -124,16 +124,17 @@ def main(config: Config) -> None:
             batch = next(train_dl_iterator)
             trainer.step(batch, epoch)
 
-    if epoch == training_args.epochs - 1:
-        hf_save_dir = os.path.join(training_args.output_dir, "final-model")
-    else:
-        hf_save_dir = os.path.join(
-            training_args.output_dir,
-            "checkpoints",
-            f"epoch_{epoch}",
-            "end-epoch-model",
-        )
-    save_consolidated_model(trainer.model, hf_save_dir, rank)
+        if epoch == training_args.epochs - 1:
+            hf_save_dir = os.path.join(training_args.output_dir, "final-model")
+        else:
+            hf_save_dir = os.path.join(
+                training_args.output_dir,
+                "checkpoints",
+                f"epoch_{epoch}",
+                "end-epoch-model",
+            )
+        save_consolidated_model(trainer.model, hf_save_dir, rank)
+        dataset.reset_dataloaders()
 
 if __name__ == "__main__":
     args = parse_args()
