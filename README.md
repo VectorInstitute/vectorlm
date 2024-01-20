@@ -42,7 +42,7 @@ The central configuration that is used across data preprocessing, training, and 
 
 ## Data Preprocessing
 
-We provide a script for data preprocessing [`preprocess_data.py`](preprocess_data.py). This converts a text dataset into the same format used for model pretraining. We refrain from providing a script that prepares an instruction finetuning dataset due to different models requiring unique formatting. We also provide options for packing datasets. For more information, please consult the config documentation under [`docs/config.md`](docs/config.md).
+We provide a script for data preprocessing [`preprocess_data.py`](preprocess_data.py). This converts a text dataset into the same format used for model pretaining (causal language modeling). We refrain from providing a script that prepares an instruction finetuning dataset due to different models requiring unique formatting. We also provide options for packing datasets. For more information, please consult the config documentation under [`docs/config.md`](docs/config.md).
 
 ## Training
 
