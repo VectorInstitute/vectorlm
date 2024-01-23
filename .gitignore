@@ -1,6 +1,7 @@
 *.out
 *.err
 *.egg-info
+**/*.sh
 __pycache__/
 wandb/
 build/
