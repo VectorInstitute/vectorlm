@@ -108,7 +108,8 @@ def tokenize_dataset(
         if not separator:
             tokenized = tokenizer.encode(prompt, add_special_tokens=False)
             if truncate and len(tokenized) > tokenizer.model_max_length:
-                tokenized = tokenized[:tokenizer.model_max_length]
+                tokenized = tokenized[:tokenizer.model_max_length - 1]
+                tokenized.append(tokenizer.eos_token_id)
             all_labels.append(deepcopy(tokenized))
         else:
             if separator not in prompt:
