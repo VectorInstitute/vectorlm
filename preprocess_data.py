@@ -93,21 +93,28 @@ def tokenize_dataset(
     all_input_ids = []
     all_attention_mask = []
     all_labels = []
+    # Adding bos/eos
     if add_bos_eos:
         bos, eos = tokenizer.bos_token, tokenizer.eos_token
     else:
         bos, eos = "", ""
     for example in examples[data_field]:
+        # If we want to include a prepended prompt to each datapoint
         if pre_pend:
             prompt = f"{bos}{pre_pend}{example}{eos}"
         else:
             prompt = f"{bos}{example}{eos}"
+        # If we've specified a separator present in each sequence
         if not separator:
             tokenized = tokenizer.encode(prompt, add_special_tokens=False)
-            if truncate and len(tokenized) > tokenizer.max_model_length:
-                tokenized = tokenized[:tokenizer.max_model_length]
+            if truncate and len(tokenized) > tokenizer.model_max_length:
+                tokenized = tokenized[:tokenizer.model_max_length - 1]
+                tokenized.append(tokenizer.eos_token_id)
             all_labels.append(deepcopy(tokenized))
         else:
+            if separator not in prompt:
+                continue
+            # Perform tokenization separately to allow for conditional prompting
             separation_idx = prompt.find(separator) + len(separator)
             prefix, postfix = prompt[:separation_idx], prompt[separation_idx:]
             tokenized_prefix = tokenizer.encode(
@@ -117,12 +124,27 @@ def tokenize_dataset(
                 postfix, add_special_tokens=False,
             )
             tokenized = tokenized_prefix + tokenized_postfix
-            if truncate and len(tokenized) > tokenizer.max_model_length:
-                tokenized = tokenized[:tokenizer.max_model_length]
-            tokenized = tokenized_prefix + tokenized_postfix
-            all_labels.append(
-                [-100] * len(tokenized_prefix) + deepcopy(tokenized_postfix),
-            )
+            if truncate and len(tokenized) > tokenizer.model_max_length:
+                tokenized = tokenized[:tokenizer.model_max_length - 1]
+                tokenized.append(tokenizer.eos_token_id)
+            # We need to address this separately, because labels need to
+            # backprop on bos/eos tokens
+            if add_bos_eos:
+                label = (
+                    [tokenizer.bos_token_id]
+                    + ([-100] * (len(tokenized_prefix) - 1))
+                    + deepcopy(tokenized_postfix)
+                )
+            else:
+                label = (
+                    [-100] * len(tokenized_prefix)
+                    + deepcopy(tokenized_postfix)
+                )
+            # If truncated, labels should be the same.
+            if truncate and len(label) > tokenizer.model_max_length:
+                label = label[:tokenizer.model_max_length - 1]
+                label.append(tokenizer.eos_token_id)
+            all_labels.append(label)
         all_input_ids.append(tokenized)
         all_attention_mask.append([1] * len(tokenized))
 
@@ -160,7 +182,8 @@ def pack_examples(
     """
     chunk_size = tokenizer.model_max_length
     if add_bos_eos:
-        chunk_size -= 2  # For BOS and EOS tokens.
+        # For BOS and EOS tokens.
+        chunk_size -= 2
         bos, eos = [tokenizer.bos_token_id], [tokenizer.eos_token_id]
     else:
         bos, eos = [], []
@@ -169,25 +192,42 @@ def pack_examples(
     if packing_type == "full":
         joined_examples = {k: sum(examples[k], []) for k in all_keys}
         total_length = len(joined_examples["input_ids"])
-        result = {
-            k: [
-                bos + v[i:i + chunk_size] + eos for i in range(
-                    0, total_length, stride,
-                )
-            ] for k, v in joined_examples.items()
-        }
+        result = {}
+        for k, v in joined_examples.items():
+            value_chunked_lst = []
+            for i in range(0, total_length, stride):
+                if k != "attention_mask":
+                    value_chunked_lst.append(bos + v[i:i + chunk_size] + eos)
+                else:
+                    if add_bos_eos:
+                        # Need to do this explicitly because attention mask
+                        # is just 1s or 0s.
+                        value_chunked_lst.append(
+                            [1] + v[i:i + chunk_size] + [1]
+                        )
+                    else:
+                        value_chunked_lst.append(v[i:i + chunk_size])
     elif packing_type == "partial":
         result = {k:[] for k in examples}
         _key = all_keys[0]
         for idx in range(len(examples[_key])):
             total_length = len(examples[_key][idx])
             for key in all_keys:
-                sliced_example = [
-                    (
-                        bos + examples[key][idx][i:i + chunk_size] + eos
-                    ) for i in range(0, total_length, stride)
-                ]
-                result[key].extend(sliced_example)
+                for i in range(0, total_length, stride):
+                    if key != "attention_mask":
+                        sliced_example = [
+                            bos + examples[key][idx][i:i + chunk_size] + eos
+                        ]
+                    else:
+                        if add_bos_eos:
+                            sliced_example = [
+                                [1] + examples[key][idx][i:i + chunk_size] + [1]
+                            ]
+                        else:
+                            sliced_example = [
+                                examples[key][idx][i:i + chunk_size]
+                            ]
+                    result[key].extend(sliced_example)
     else:
         msg = "`packing_type` needs to either be `full` or `partial`."
         raise ValueError(msg)

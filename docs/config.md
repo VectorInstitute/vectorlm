@@ -65,7 +65,7 @@ Similar to the wandb config above, these keyword parameters are fed directly int
 * `overlap`: When we chunk a data point during packing, we can choose to have some overlap between the current chunk and the next chunk. This might help the model understand surrounding context during training (although this isn't something we have empirically investigated, we keep this option available to users).
 * `add_bos_eos_tokens`: Whether to add `BOS` and `EOS` tokens as defined by the respective HuggingFace tokenizer. If using packing, these will be added after packing is done, so that each chunk of size `max_seq_len` has these tokens.
 * `from_disk`: Whether we are going to be loading the dataset to preprocess from disk (the other option is to download straight from HuggingFace).
-* `seperator`: If using conditional finetuning (i.e. in a given data point, everything before `separator` will not be used for calculating the loss and its labels will be `ignore_index`).
+* `seperator`: If using conditional finetuning (i.e. in a given data point, everything before `separator` will not be used for calculating the loss and its labels will be `ignore_index`). **Note:** if `separator` is not found in a given sequence, the default behavior is that datapoint will be skipped and not be a part of the final set.
 * `load_path`: The directory containing the HuggingFace dataset we are loading to preprocess.
 * `split`: If `load_path` is a dataset dictionary, `split` specifies which key in this dictionary contains the dataset we are preprocessing.
 * `save_path`: The directory we will be saving the processed dataset to.
