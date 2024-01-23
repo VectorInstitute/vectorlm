@@ -93,15 +93,18 @@ def tokenize_dataset(
     all_input_ids = []
     all_attention_mask = []
     all_labels = []
+    # Adding bos/eos
     if add_bos_eos:
         bos, eos = tokenizer.bos_token, tokenizer.eos_token
     else:
         bos, eos = "", ""
     for example in examples[data_field]:
+        # If we want to include a prepended prompt to each datapoint
         if pre_pend:
             prompt = f"{bos}{pre_pend}{example}{eos}"
         else:
             prompt = f"{bos}{example}{eos}"
+        # If we've specified a separator present in each sequence
         if not separator:
             tokenized = tokenizer.encode(prompt, add_special_tokens=False)
             if truncate and len(tokenized) > tokenizer.model_max_length:
@@ -110,6 +113,7 @@ def tokenize_dataset(
         else:
             if separator not in prompt:
                 continue
+            # Perform tokenization separately to allow for conditional prompting
             separation_idx = prompt.find(separator) + len(separator)
             prefix, postfix = prompt[:separation_idx], prompt[separation_idx:]
             tokenized_prefix = tokenizer.encode(
@@ -120,21 +124,26 @@ def tokenize_dataset(
             )
             tokenized = tokenized_prefix + tokenized_postfix
             if truncate and len(tokenized) > tokenizer.model_max_length:
-                tokenized = tokenized[:tokenizer.model_max_length]
+                tokenized = tokenized[:tokenizer.model_max_length - 1]
+                tokenized.append(tokenizer.eos_token_id)
+            # We need to address this separately, because labels need to
+            # backprop on bos/eos tokens
             if add_bos_eos:
                 label = (
-                    [tokenizer.bos_token_id] + (
-                        [-100] * (len(tokenized_prefix) - 1)
-                    ) + deepcopy(tokenized_postfix)
+                    [tokenizer.bos_token_id]
+                    + ([-100] * (len(tokenized_prefix) - 1))
+                    + deepcopy(tokenized_postfix)
                 )
             else:
                 label = (
-                    [-100] * len(
-                        tokenized_prefix
-                    ) + deepcopy(tokenized_postfix)
+                    [-100] * len(tokenized_prefix)
+                    + deepcopy(tokenized_postfix)
                 )
             # If truncated, labels should be the same.
-            all_labels.append(label[:len(tokenized)])
+            if truncate and len(label) > tokenizer.model_max_length:
+                label = label[:tokenizer.model_max_length - 1]
+                label.append(tokenizer.eos_token_id)
+            all_labels.append(label)
         all_input_ids.append(tokenized)
         all_attention_mask.append([1] * len(tokenized))
 
