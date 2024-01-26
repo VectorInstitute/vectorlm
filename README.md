@@ -1,4 +1,7 @@
-![VectorLM Logo](vectorlm.png)
+<p align="center">
+  <img src="vectorlm.png" alt="VectorLM custom image"/>
+</p>
+
 # VectorLM
 
 AI Engineering Team, Vector Institute.
