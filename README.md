@@ -1,3 +1,4 @@
+![VectorLM Logo](logo.png)
 # VectorLM
 
 AI Engineering Team, Vector Institute.
