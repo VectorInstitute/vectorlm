@@ -3,7 +3,7 @@ enable_wandb_logging: True
 
 wandb_config:
   project: MedGPT
-  name: Llama-2-7B-chat-ft-mdpi-mtb-main
+  name: Llama-2-7B-chat
 
 train_parameters:
   output_dir: your/output/dir
@@ -53,7 +53,6 @@ dataset_preprocess:
   packing_type: partial
   add_bos_eos_tokens: True
   from_disk: True
-  seperator: "Excerpt:"
   load_path: your/unprocessed/dataset
   split: train
   save_path: dir/to/save/processed/dataset
