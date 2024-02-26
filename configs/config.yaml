@@ -1,6 +1,14 @@
 model: /model-weights/Llama-2-7b-chat-hf
 enable_wandb_logging: True
 
+lora_peft_config:
+  task_type: CAUSAL_LM
+  inference_mode: False
+  r: 8
+  lora_alpha: 32
+  lora_dropout: 0.1
+
+
 wandb_config:
   project: MedGPT
   name: Llama-2-7B-chat

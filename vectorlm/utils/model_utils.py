@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import functools
-from typing import Any
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.distributed as dist
-from peft import PeftConfig, PeftModel
+from peft import LoraConfig, PeftConfig, PeftModel, TaskType, get_peft_model
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
@@ -23,6 +23,27 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizer,
 )
+
+
+def initialize_lora_model_and_tokenizer(
+    path: str,
+    use_mp: bool,
+    use_fa: bool,
+    max_seq_len: int,
+    peft_config_dict: Dict[str, Any],
+) -> tuple[PeftModel, PreTrainedTokenizer]:
+    """
+    Initialize lora peft configuration for a non-lora model.
+    """
+    model, tokenizer = load_model_and_tokenizer(path, use_mp, use_fa, max_seq_len)
+
+    # Replace task type string in config with TaskType member.
+    task_type_str = peft_config_dict["task_type"]
+    task_type = getattr(TaskType, task_type_str)
+    lora_config = LoraConfig(**{**peft_config_dict, "task_type": task_type})
+
+    lora_model = get_peft_model(model, lora_config)
+    return lora_model, tokenizer
 
 
 def load_peft_model_and_tokenizer(
