@@ -4,6 +4,7 @@ import os
 import re
 
 import torch
+from peft.peft_model import PeftModel
 from torch import nn
 from torch.distributed.fsdp import (
     FullStateDictConfig,  # general model non-sharded, non-flattened params
@@ -116,6 +117,11 @@ def save_model(model: nn.Module, output_dir: str, rank: int) -> None:
     os.makedirs(output_dir, exist_ok=True)
     weights_name = f"model_rank{rank}.bin"
     output_model_file = os.path.join(output_dir, weights_name)
+
+    if isinstance(model, PeftModel):
+        model.save_pretrained(output_model_file)
+        return
+
     with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
         print(f"Saving model to {output_model_file}")
         state_dict = model.state_dict()
@@ -155,6 +161,10 @@ def save_consolidated_model(
         save_dir: The checkpointing directory.
         rank: The worker's rank.
     """
+    if isinstance(model, PeftModel):
+        model.save_pretrained(save_dir)
+        return
+
     os.makedirs(save_dir, exist_ok=True)
     cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
     save_path = os.path.join(save_dir, "model.bin")

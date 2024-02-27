@@ -238,15 +238,28 @@ class Trainer:
         ids = batch.pop("id").to(torch.cuda.current_device())
         batch["input_ids"] = batch["input_ids"].type(torch.LongTensor)
         batch["labels"] = batch["labels"].type(torch.LongTensor)
+        batch = {k: v.to(torch.cuda.current_device()) for k, v in batch.items()}
         self.dataset.update_processed_ids(ids)
 
         if (self.tr_step + 1) % self.gas != self.gas - 1:
-            # no need to sync while accumulating gradients
-            with self.model.no_sync():
+            if hasattr(self.model, "no_sync"):
+                # fsdp: no need to sync while accumulating gradients
+                with self.model.no_sync():
+                    out = self.model(**batch)
+                    tr_step_loss = out.loss
+                    (tr_step_loss / self.gas).backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.config.max_grad_norm
+                    )
+            else:
+                # non-fsdp
                 out = self.model(**batch)
                 tr_step_loss = out.loss
                 (tr_step_loss / self.gas).backward()
-                self.model.clip_grad_norm_(self.config.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.config.max_grad_norm
+                )
+
         else:
             # next forward / backward pass will be synced
             dist.barrier()
@@ -283,6 +296,7 @@ class Trainer:
                 batch.pop("id")
                 batch["input_ids"] = batch["input_ids"].type(torch.LongTensor)
                 batch["labels"] = batch["labels"].type(torch.LongTensor)
+                batch = {k: v.to(torch.cuda.current_device()) for k, v in batch.items()}
                 out = self.model(**batch)
                 eval_loss += out.loss
         gathered_eval_loss = _gather(eval_loss.reshape(1)).mean().item()
