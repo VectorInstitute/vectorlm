@@ -7,8 +7,6 @@ from argparse import Namespace
 
 import torch
 import torch.distributed as dist
-from torch.distributed.fsdp.fully_sharded_data_parallel import \
-    FullyShardedDataParallel as FSDP
 from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import set_seed
@@ -18,9 +16,10 @@ from vectorlm.dataset import Dataset
 from vectorlm.trainer import Trainer
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.misc_utils import cleanup, setup, wandb_setup
-from vectorlm.utils.model_utils import (hook_activation_checkpointing,
-                                        initialize_lora_model_and_tokenizer,
-                                        shard_model_manual)
+from vectorlm.utils.model_utils import (
+    hook_activation_checkpointing,
+    initialize_lora_model_and_tokenizer,
+)
 from vectorlm.utils.optimizer_utils import get_custom_scheduler
 from vectorlm.utils.save_utils import save_consolidated_model
 
@@ -74,6 +73,10 @@ def main(config: Config) -> None:
         config.lora_peft_config,
     )
 
+    # One GPU only.
+    assert dist.get_world_size() == 1
+    model = model.cuda()
+
     if training_args.use_activation_checkpointing:
         hook_activation_checkpointing(model, LlamaDecoderLayer)
 
@@ -114,9 +117,9 @@ def main(config: Config) -> None:
         lr_scheduler,
     )
 
-    # Checkpoint check. Always call before training.
-    # If no checkpoint, it returns 0.
-    checkpointed_epoch = trainer.find_checkpoint(training_args.output_dir)
+    # TODO: support restoring LoRA fine-tuning
+    trainer.dataset.setup_dataloaders()
+    checkpointed_epoch = 0
 
     for epoch in range(checkpointed_epoch, training_args.epochs):
         trainer.model.train()
