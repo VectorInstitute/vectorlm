@@ -63,9 +63,15 @@ We have provided an example script to show what a regular workflow would look li
 
 At the end of training, a consolidated model will be saved under your output directory as a `.bin` file. You can simply just run [`vectorlm/utils/convert_to_hf.py`](vectorlm/utils/convert_to_hf.py) to convert it to the regular HuggingFace model format. The script uses the main config file to determine save locations.
 
+### Example: LoRA on one GPU
+
+We provide an additional example of parameter-efficient fine-tuning (PEFT) using LoRA on one NVIDIA GPU. Use the [`examples/launch_lora_one_gpu.sh`](examples/launch_lora_one_gpu.sh) to launch your job on the cluster.
+
+This [slide](https://docs.google.com/presentation/d/1ju7nItD0Xvnq_w5g25w91SpKnkpGWkOSRrjp8N-2TYM/edit?usp=sharing) provides more detail about the LoRA implementation in VectorLM, as well as challenges related to integrating LoRA with FSDP.
+
 ## Roadmap
-- PEFT methods (LoRA).
+- PEFT methods (LoRA + FSDP).
 
 # Contributors
 
-Adil Asif, Ziwen Han, John Willes.
+Adil Asif, Ziwen Han, John Willes, Jacob-Junqi Tian.
