@@ -67,7 +67,7 @@ At the end of training, a consolidated model will be saved under your output dir
 
 We provide an additional example of parameter-efficient fine-tuning (PEFT) using LoRA on one NVIDIA GPU. Use the [`examples/launch_lora_one_gpu.sh`](examples/launch_lora_one_gpu.sh) to launch your job on the cluster.
 
-This [slide](https://docs.google.com/presentation/d/1ju7nItD0Xvnq_w5g25w91SpKnkpGWkOSRrjp8N-2TYM/edit?usp=sharing) provides more detail about the LoRA implementation in VectorLM, as well as challenges related to integrating LoRA with FSDP.
+This [slide deck](https://docs.google.com/presentation/d/1ju7nItD0Xvnq_w5g25w91SpKnkpGWkOSRrjp8N-2TYM/edit?usp=sharing) provides more detail about the LoRA implementation in VectorLM, as well as challenges related to integrating LoRA with FSDP.
 
 ## Roadmap
 - PEFT methods (LoRA + FSDP).
