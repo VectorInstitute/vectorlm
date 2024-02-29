@@ -266,7 +266,9 @@ class Trainer:
             out = self.model(**batch)
             tr_step_loss = out.loss
             (tr_step_loss / self.gas).backward()
-            self.model.clip_grad_norm_(self.config.max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(), self.config.max_grad_norm
+            )
             self.optimizer.step()
             if isinstance(self.lr_scheduler, ReduceLROnPlateau):
                 self.lr_scheduler.step(self.metric)

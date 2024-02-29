@@ -192,12 +192,24 @@ def save_optimizer(
     opt_name = f"optimizer_rank{rank}.bin"
     output_optimizer_file = os.path.join(output_dir, opt_name)
     opt_cfg = LocalOptimStateDictConfig(offload_to_cpu=True)
-    with FSDP.state_dict_type(
-        model,
-        StateDictType.LOCAL_STATE_DICT,
-        optim_state_dict_config=opt_cfg,
-    ):
-        opt_state = FSDP.optim_state_dict(model, optimizer)
+
+    try:
+        with FSDP.state_dict_type(
+            model,
+            StateDictType.LOCAL_STATE_DICT,
+            optim_state_dict_config=opt_cfg,
+        ):
+            opt_state = FSDP.optim_state_dict(model, optimizer)
+
+            print(f"Saving optimizer state to {output_optimizer_file}")
+            torch.save(opt_state, output_optimizer_file)
+            print(f"Optimizer state saved to {output_optimizer_file}")
+
+    except AttributeError:
+        # One GPU only. Optimizer isn't sharded.
+        opt_state = optimizer.state_dict()
+        print("Optimizer state is retrieved as non-sharded")
+
         print(f"Saving optimizer state to {output_optimizer_file}")
         torch.save(opt_state, output_optimizer_file)
         print(f"Optimizer state saved to {output_optimizer_file}")
