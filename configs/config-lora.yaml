@@ -9,11 +9,11 @@ lora_peft_config:
   lora_dropout: 0.1
 
 wandb_config:
-  project: vector-lm-verify
-  name: opt-125m-lora
+  project: MedGPT
+  name: Llama-2-7B-chat
 
 train_parameters:
-  output_dir: data/model/opt-125m-gsm8k-lora
+  output_dir: your/output/dir
   max_seq_len: 1024
   epochs: 1
   seed: 11
@@ -50,17 +50,17 @@ dataset:
   ignore_index: -100
   eval_bs: 8
   train_bs: 8
-  train_ds: data/processed/gsm8k-question/train
-  eval_ds: data/processed/gsm8k-question/test
+  train_ds: your/train/ds
+  eval_ds: your/eval/ds
 
 dataset_preprocess:
   ignore_index: -100
   dataset_format: hf
-  data_field: question
+  data_field: text
   packing_type: partial
   add_bos_eos_tokens: True
   from_disk: True
-  load_path: data/raw/gsm8k
+  load_path: your/unprocessed/dataset
   split: train
-  save_path: data/processed/gsm8k-question/train
+  save_path: dir/to/save/processed/dataset
   truncate: False
