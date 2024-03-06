@@ -16,7 +16,12 @@ from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     FullyShardedDataParallel as FSDP,
 )
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+from torch.distributed.fsdp.wrap import (
+    transformer_auto_wrap_policy,
+    _or_policy,
+    lambda_auto_wrap_policy,
+)
+
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -92,6 +97,7 @@ def load_peft_model_and_tokenizer(
         config,
     )
     return peft_model, tokenizer
+
 
 def load_model_and_tokenizer(
     path: str,
@@ -173,9 +179,25 @@ def fsdp_config(
         )
         ret_dict["mixed_precision"] = mp_policy
 
+    # See https://github.com/facebookresearch/llama-recipes/blob/674b37ee6/src/llama_recipes/utils/fsdp_utils.py#L9
+    def lambda_policy_fn(module):
+        if (
+            len(list(module.named_children())) == 0
+            and getattr(module, "weight", None) is not None
+            and module.weight.requires_grad
+        ):
+            return True
+        return False
+
+    lambda_policy = functools.partial(
+        lambda_auto_wrap_policy, lambda_fn=lambda_policy_fn
+    )
+    transformer_wrap_policy = functools.partial(
+        transformer_auto_wrap_policy, transformer_layer_cls=[layer_to_wrap]
+    )
+
     auto_wrap_policy = functools.partial(
-        transformer_auto_wrap_policy,
-        transformer_layer_cls={layer_to_wrap},
+        _or_policy, policies=[lambda_policy, transformer_wrap_policy]
     )
     sharding_strategy = getattr(ShardingStrategy, strategy)
 
@@ -239,5 +261,7 @@ def hook_activation_checkpointing(
     check_fn = lambda submodule: isinstance(submodule, layer)
 
     apply_activation_checkpointing(
-        model, checkpoint_wrapper_fn=non_reentrant_wrapper, check_fn=check_fn,
+        model,
+        checkpoint_wrapper_fn=non_reentrant_wrapper,
+        check_fn=check_fn,
     )

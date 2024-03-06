@@ -28,8 +28,9 @@ It is heavily recommended that you use Flash Attention-2, please follow the inst
 ## Introduction
 
 VectorLM is a training package built upon HuggingFace models and PyTorch Fully Sharded Data Parallelism. The package has been built around throughput optimizations. It is targeted at largely simplifying the workflow to setup distributed schemes while training **medium-sized** models in **resource-constrained** environments. This is especially true for academic clusters where powerful GPUs are available, but are bottlenecked by interconnectivity. Thus, there are two goals of this light-weight package:
-* Use simple sharding strategies. FSDP is a great option for medium-sized model training. It is well maintained by the PyTorch team.
-* Employ several optimization techniques to make scaling to larger models possible whilst minimizing memory usage and communication volume. As a result, we are able to efficiently dense finetune LLMs of sizes up to 13B parameters on the Vector cluster.
+
+- Use simple sharding strategies. FSDP is a great option for medium-sized model training. It is well maintained by the PyTorch team.
+- Employ several optimization techniques to make scaling to larger models possible whilst minimizing memory usage and communication volume. As a result, we are able to efficiently dense finetune LLMs of sizes up to 13B parameters on the Vector cluster.
 
 <details>
 <summary><b>What is FSDP?</b></summary>
@@ -42,6 +43,7 @@ Our package is designed for lightweight operations and is not intended for train
 </details>
 
 ## Global Configuration
+
 The central configuration that is used across data preprocessing, training, and dataset loading is under [`configs/config.yaml`](configs/config.yaml). All arguments, as well as recommendations, are documented under [`docs/config.md`](docs/config.md).
 
 ## Data Preprocessing
@@ -54,8 +56,8 @@ We implement several training optimizations that can be reviewed under [`docs/tr
 
 ### Main Classes
 
-* [`Dataset`](vectorlm/dataset.py): It loads the training and test sets as processed by data processing script above. It also sets the dataloaders and shards them across devices.
-* [`Trainer`](vectorlm/trainer.py): The main trainer class. It contains the model, optimizer, LR scheduler, and dataloaders. It also performs the training and evaluation steps as well as state checkpointing.
+- [`Dataset`](vectorlm/dataset.py): It loads the training and test sets as processed by data processing script above. It also sets the dataloaders and shards them across devices.
+- [`Trainer`](vectorlm/trainer.py): The main trainer class. It contains the model, optimizer, LR scheduler, and dataloaders. It also performs the training and evaluation steps as well as state checkpointing.
 
 ### Example: Llama-2
 
@@ -63,14 +65,11 @@ We have provided an example script to show what a regular workflow would look li
 
 At the end of training, a consolidated model will be saved under your output directory as a `.bin` file. You can simply just run [`vectorlm/utils/convert_to_hf.py`](vectorlm/utils/convert_to_hf.py) to convert it to the regular HuggingFace model format. The script uses the main config file to determine save locations.
 
-### Example: LoRA on one GPU
+### Example: LoRA FSDP
 
-We provide an additional example of parameter-efficient fine-tuning (PEFT) using LoRA on one NVIDIA GPU. Use the [`examples/launch_lora_one_gpu.sh`](examples/launch_lora_one_gpu.sh) to launch your job on the cluster.
-
-This [slide deck](https://docs.google.com/presentation/d/1ju7nItD0Xvnq_w5g25w91SpKnkpGWkOSRrjp8N-2TYM/edit?usp=sharing) provides more detail about the LoRA implementation in VectorLM, as well as challenges related to integrating LoRA with FSDP.
+We provide an additional example of parameter-efficient fine-tuning (PEFT) using LoRA and FSDP. Use the [`examples/launch_lora.sh`](examples/launch_lora.sh) to launch your job on the cluster.
 
 ## Roadmap
-- PEFT methods (LoRA + FSDP).
 
 # Contributors
 

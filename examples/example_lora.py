@@ -19,6 +19,7 @@ from vectorlm.utils.misc_utils import cleanup, setup, wandb_setup
 from vectorlm.utils.model_utils import (
     hook_activation_checkpointing,
     initialize_lora_model_and_tokenizer,
+    shard_model,
 )
 from vectorlm.utils.optimizer_utils import get_custom_scheduler
 from vectorlm.utils.save_utils import save_consolidated_model
@@ -73,9 +74,13 @@ def main(config: Config) -> None:
         config.lora_peft_config,
     )
 
-    # One GPU only.
-    assert dist.get_world_size() == 1
-    model = model.cuda()
+    model = shard_model(
+        model,
+        LlamaDecoderLayer,
+        training_args.use_mp,
+        training_args.use_activation_checkpointing,
+        training_args.sharding_strategy,
+    )
 
     if training_args.use_activation_checkpointing:
         hook_activation_checkpointing(model, LlamaDecoderLayer)
