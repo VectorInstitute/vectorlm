@@ -1,4 +1,4 @@
-model: facebook/opt-125m
+model: /model-weights/Llama-2-7b-chat-hf
 enable_wandb_logging: True
 
 lora_peft_config:

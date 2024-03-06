@@ -4,7 +4,6 @@ import os
 import re
 
 import torch
-from peft.peft_model import PeftModel
 from torch import nn
 from torch.distributed.fsdp import (
     FullStateDictConfig,  # general model non-sharded, non-flattened params
@@ -117,11 +116,6 @@ def save_model(model: nn.Module, output_dir: str, rank: int) -> None:
     os.makedirs(output_dir, exist_ok=True)
     weights_name = f"model_rank{rank}.bin"
     output_model_file = os.path.join(output_dir, weights_name)
-
-    if isinstance(model, PeftModel):
-        model.save_pretrained(output_model_file)
-        return
-
     with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
         print(f"Saving model to {output_model_file}")
         state_dict = model.state_dict()
@@ -161,10 +155,6 @@ def save_consolidated_model(
         save_dir: The checkpointing directory.
         rank: The worker's rank.
     """
-    if isinstance(model, PeftModel):
-        model.save_pretrained(save_dir)
-        return
-
     os.makedirs(save_dir, exist_ok=True)
     cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
     save_path = os.path.join(save_dir, "model.bin")
@@ -192,24 +182,12 @@ def save_optimizer(
     opt_name = f"optimizer_rank{rank}.bin"
     output_optimizer_file = os.path.join(output_dir, opt_name)
     opt_cfg = LocalOptimStateDictConfig(offload_to_cpu=True)
-
-    try:
-        with FSDP.state_dict_type(
-            model,
-            StateDictType.LOCAL_STATE_DICT,
-            optim_state_dict_config=opt_cfg,
-        ):
-            opt_state = FSDP.optim_state_dict(model, optimizer)
-
-            print(f"Saving optimizer state to {output_optimizer_file}")
-            torch.save(opt_state, output_optimizer_file)
-            print(f"Optimizer state saved to {output_optimizer_file}")
-
-    except AttributeError:
-        # One GPU only. Optimizer isn't sharded.
-        opt_state = optimizer.state_dict()
-        print("Optimizer state is retrieved as non-sharded")
-
+    with FSDP.state_dict_type(
+        model,
+        StateDictType.LOCAL_STATE_DICT,
+        optim_state_dict_config=opt_cfg,
+    ):
+        opt_state = FSDP.optim_state_dict(model, optimizer)
         print(f"Saving optimizer state to {output_optimizer_file}")
         torch.save(opt_state, output_optimizer_file)
         print(f"Optimizer state saved to {output_optimizer_file}")
