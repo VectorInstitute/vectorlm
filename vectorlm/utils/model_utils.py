@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import functools
-from typing import Any
+from typing import Any, Callable
 
 import torch
 import torch.distributed as dist
@@ -56,6 +56,7 @@ def load_peft_model_and_tokenizer(
     Returns:
     -------
         The PEFT model and tokenizer.
+
     """
     model, tokenizer = load_model_and_tokenizer(
         path,
@@ -72,11 +73,15 @@ def load_peft_model_and_tokenizer(
     )
     return peft_model, tokenizer
 
+
 def load_model_and_tokenizer(
     path: str,
     use_mp: bool,
     use_fa: bool,
     max_seq_len: int,
+    local_rank: int,
+    low_cpu_mem_usage: bool,
+    use_safetensors: bool = True,
 ) -> tuple[PreTrainedModel, PreTrainedTokenizer]:
     """Load the model and tokenizer.
 
@@ -86,13 +91,19 @@ def load_model_and_tokenizer(
         use_mp: Whether to use mixed-precision.
         use_fa: Whether to use Flash Attention 2.
         max_seq_len: The maximum sequence length.
+        local_rank: The local rank of the current worker.
+        low_cpu_mem_usage: Whether to only load model weights on main rank, and
+            then scatter them to the other workers.
+        use_safetensors: Whether to use HF safe tensors. Note that this format
+            loads significantly faster.
 
     Returns:
     -------
         The model and tokenizer.
+
     """
     # load model
-    model_args = {"use_cache": False}
+    model_args = {"use_cache": False, "use_safetensors": use_safetensors}
 
     if use_mp:
         model_args["torch_dtype"] = torch.bfloat16
@@ -101,10 +112,18 @@ def load_model_and_tokenizer(
             msg = "Use FA with bf16 (mixed precision)"
             raise ValueError(msg)
         model_args["attn_implementation"] = "flash_attention_2"
-    model = AutoModelForCausalLM.from_pretrained(
-        path,
-        **model_args,
-    )
+
+    if not low_cpu_mem_usage or local_rank == 0:
+        model = AutoModelForCausalLM.from_pretrained(
+            path,
+            **model_args,
+        )
+    else:
+        with torch.device("meta"):
+            model = AutoModelForCausalLM.from_pretrained(
+                path,
+                **model_args,
+            )
 
     # load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(path)
@@ -125,6 +144,8 @@ def fsdp_config(
     use_mp: bool,
     layer_to_wrap: nn.Module,
     strategy: str,
+    local_rank: int,
+    low_cpu_mem_usage: bool,
 ) -> dict[str, Any]:
     """Get FSDP config.
 
@@ -133,11 +154,23 @@ def fsdp_config(
         use_mp: Whether to use mixed-precision.
         layer_to_wrap: The layer we are wrapping using FSDP.
         strategy: The sharding strategy to use.
+        local_rank: The local rank of the current worker.
+        low_cpu_mem_usage: Whether to only load model weights on main rank, and
+            then scatter them to the other workers.
 
     Returns:
     -------
         A dictionary containing the configurations.
+
     """
+
+    def _module_init_fn(module: nn.Module) -> Callable:
+        """Return the function used for initializing modules on FSDP workers."""
+        return module.to_empty(
+            device=torch.cuda.current_device(),
+            recurse=False,
+        )
+
     strategy_exists = hasattr(ShardingStrategy, strategy)
     if not strategy_exists:
         msg = f"The sharding strategy {strategy} does not exist."
@@ -161,6 +194,9 @@ def fsdp_config(
     ret_dict["auto_wrap_policy"] = auto_wrap_policy
     ret_dict["sharding_strategy"] = sharding_strategy
     ret_dict["device_id"] = torch.cuda.current_device()
+    if low_cpu_mem_usage:
+        ret_dict["param_init_fn"] = _module_init_fn if local_rank != 0 else None
+        ret_dict["sync_module_states"] = True
     return ret_dict
 
 
@@ -170,6 +206,8 @@ def shard_model(
     use_mp: bool,
     use_activation_checkpointing: bool,
     strategy: str,
+    local_rank: int,
+    low_cpu_mem_usage: bool,
 ) -> nn.Module:
     """Shard the model to workers using FSDP.
 
@@ -180,12 +218,18 @@ def shard_model(
         use_mp: Whether to use mixed-precision.
         use_activation_checkpointing: Whether to use activation checkpointing.
         strategy: The sharding strategy to use.
+        local_rank: The local rank of the current worker.
+        low_cpu_mem_usage: Whether to only load model weights on main rank, and
+            then scatter them to the other workers.
 
     Returns:
     -------
         The sharded module with the requested configurations.
+
     """
-    fsdp_cfg = fsdp_config(use_mp, layer_to_wrap, strategy)
+    fsdp_cfg = fsdp_config(
+        use_mp, layer_to_wrap, strategy, local_rank, low_cpu_mem_usage
+    )
     if dist.get_rank() == 0:
         print(f"FSDP config: {fsdp_cfg}")
     model = FSDP(model, **fsdp_cfg)
@@ -209,6 +253,7 @@ def hook_activation_checkpointing(
     ----
         model: The model we are using.
         layer: The layer to which we hook activation checkpointing to.
+
     """
     non_reentrant_wrapper = functools.partial(
         checkpoint_wrapper,
