@@ -228,7 +228,7 @@ def shard_model(
 
     """
     fsdp_cfg = fsdp_config(
-        use_mp, layer_to_wrap, strategy, local_rank, low_cpu_mem_usage
+        use_mp, layer_to_wrap, strategy, local_rank, low_cpu_mem_usage,
     )
     if dist.get_rank() == 0:
         print(f"FSDP config: {fsdp_cfg}")

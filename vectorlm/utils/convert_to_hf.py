@@ -14,6 +14,7 @@ def parse_args() -> Namespace:
     Returns
     -------
         The parsed arguments.
+
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_path", default="configs/config.yaml")
@@ -28,6 +29,7 @@ def converter(config: Config) -> None:
     Args:
     ----
         config: The full config.
+
     """
     state_dict = torch.load(
         os.path.join(

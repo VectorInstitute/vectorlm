@@ -26,6 +26,7 @@ def parse_args() -> Namespace:
     Returns
     -------
         The parsed arguments.
+
     """
     parser = argparse.ArgumentParser()
     parser.add_argument(
