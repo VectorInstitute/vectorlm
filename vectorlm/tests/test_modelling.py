@@ -128,10 +128,9 @@ def test_partition_base_model(base_model, setup_and_teardown_torch_process_group
 
     output_text = []
     for parameter_name, parameter in base_model.named_parameters():
-        requires_grad = parameter.requires_grad
         output_text.append("{}\t{}".format(requires_grad, parameter_name))
 
-    with open("output_base.txt", "w") as output_file:
+    with open("data/output_base.txt", "w") as output_file:
         output_file.write("\n".join(output_text))
 
 
@@ -145,7 +144,7 @@ def test_get_module_types(lora_model_sharded):
     for module_name, module in lora_model_sharded.named_modules():
         output_text.append("{}\t{}".format(module_name, type(module)))
 
-    with open("module_types.txt", "w") as output_file:
+    with open("data/module_types.txt", "w") as output_file:
         output_file.write("\n".join(output_text))
 
 
@@ -179,7 +178,7 @@ def test_fsdp_lora_model_require_grad(
 
     # # Uncomment line below to see all parameter names.
     # print(requires_grad_counters)
-    with open("output.txt", "w") as output_file:
+    with open("data/output.txt", "w") as output_file:
         output_file.write("\n".join(output_text))
 
 
