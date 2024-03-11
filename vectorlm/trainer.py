@@ -8,7 +8,6 @@ from typing import Any
 import torch
 import torch.distributed as dist
 import wandb
-import wandb
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from transformers import PreTrainedTokenizer
@@ -337,10 +336,7 @@ class Trainer:
                 batch["input_ids"] = batch["input_ids"].type(torch.LongTensor)
                 num_tokens = len(batch["input_ids"].flatten())
                 batch["labels"] = batch["labels"].type(torch.LongTensor)
-                batch = {
-                    k: v.to(torch.cuda.current_device())
-                    for k, v in batch.items()
-                }
+                batch = {k: v.to(torch.cuda.current_device()) for k, v in batch.items()}
 
                 with self.timer_handle("eval_step", {"num_tokens": num_tokens}):
                     out = self.model(**batch)
