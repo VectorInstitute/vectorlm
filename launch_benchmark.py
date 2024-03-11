@@ -12,8 +12,10 @@ from tqdm.auto import tqdm
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--qos", required=False)
-cli_args = parser.parse_args()
-qos_selected = cli_args.qos
+parser.add_argument("--max_num_jobs", required=False)
+launcher_args = parser.parse_args()
+qos_selected = launcher_args.qos
+max_num_jobs = launcher_args.max_num_jobs
 
 model_list = [
     "/model-weights/" + model_name
@@ -66,7 +68,10 @@ for index, (flag_values, pos_args_option) in enumerate(
     args_list.append(args)
     print(" ".join(args))
 
+    if (max_num_jobs is not None) and index + 1 >= int(max_num_jobs):
+        break
+
 input("\nPress ENTER to launch {} job(s)".format(len(args_list)))
 
-for args in tqdm(args_list):
+for args in tqdm(args_list, ncols=75):
     subprocess.run(args)
