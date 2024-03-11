@@ -26,6 +26,7 @@ def parse_args() -> Namespace:
     Returns
     -------
         The parsed arguments.
+
     """
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -62,6 +63,8 @@ def main(config: Config) -> None:
         training_args.use_mp,
         training_args.use_flash_attention,
         training_args.max_seq_len,
+        local_rank,
+        training_args.low_cpu_mem_usage,
     )
 
     model = shard_model(
@@ -70,6 +73,8 @@ def main(config: Config) -> None:
         training_args.use_mp,
         training_args.use_activation_checkpointing,
         training_args.sharding_strategy,
+        local_rank,
+        training_args.low_cpu_mem_usage,
     )
 
     # load dataset

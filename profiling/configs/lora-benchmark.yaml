@@ -25,6 +25,8 @@ train_parameters:
   use_activation_checkpointing: True
   # use_flash_attention is automatically enabled 
   # for CUDA capability > 8.0
+  low_cpu_mem_usage: True
+
 
   # Gradient norm clipping
   max_grad_norm: 1
@@ -50,8 +52,8 @@ dataset:
   ignore_index: -100
   eval_bs: 8
   train_bs: 8
-  train_ds: data/processed/gsm8k-question/train
-  eval_ds: data/processed/gsm8k-question/test
+  train_ds: /dev/null
+  eval_ds: /dev/null
 
 dataset_preprocess:
   ignore_index: -100

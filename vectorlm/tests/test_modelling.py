@@ -3,6 +3,7 @@ Test model loading, sharding, and forward/backward.
 """
 
 from collections import Counter, defaultdict
+import os
 import re
 
 import pytest
@@ -23,6 +24,8 @@ from vectorlm.utils.model_utils import (
     shard_model,
     get_submodule_by_pattern,
 )
+
+local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
 
 @pytest.fixture()
@@ -57,7 +60,9 @@ def lora_peft_config():
 
 @pytest.fixture()
 def base_model():
-    model, tokenizer = load_model_and_tokenizer("facebook/opt-125m", True, False, 1024)
+    model, tokenizer = load_model_and_tokenizer(
+        "/model-weights/opt-350m", True, False, 1024, local_rank, True
+    )
     return model
 
 
@@ -69,13 +74,17 @@ def lora_model(base_model, lora_peft_config):
 
 @pytest.fixture()
 def base_model_sharded(base_model, setup_and_teardown_torch_process_group):
-    model_sharded = shard_model(base_model, OPTDecoderLayer, True, True, "FULL_SHARD")
+    model_sharded = shard_model(
+        base_model, OPTDecoderLayer, True, True, "FULL_SHARD", local_rank, True
+    )
     return model_sharded
 
 
 @pytest.fixture()
 def lora_model_sharded(lora_model, setup_and_teardown_torch_process_group):
-    model_sharded = shard_model(lora_model, OPTDecoderLayer, True, True, "FULL_SHARD")
+    model_sharded = shard_model(
+        lora_model, OPTDecoderLayer, True, True, "FULL_SHARD", local_rank, True
+    )
     return FSDP(model_sharded, device_id=torch.cuda.current_device())
 
 
@@ -99,13 +108,8 @@ def batch():
     return batch
 
 
-def test_load_model_and_tokenizer():
-    """
-    Test load base model and tokenizer.
-    """
-    model, tokenizer = load_model_and_tokenizer("facebook/opt-125m", True, True, 1024)
-
-    print("type(model): {}".format(type(model)))
+def test_load_base_model(base_model):
+    print(base_model)
 
 
 def test_match_submodule_by_pattern(base_model, lora_model):
@@ -120,14 +124,16 @@ def test_match_submodule_by_pattern(base_model, lora_model):
     assert submodule == OPTDecoderLayer
 
 
-def test_partition_base_model(base_model, setup_and_teardown_torch_process_group):
+def test_partition_base_model(
+    base_model_sharded, setup_and_teardown_torch_process_group
+):
     """
     Test partitioning base model (no lora/peft).
     """
-    base_model = shard_model(base_model, OPTDecoderLayer, True, True, "FULL_SHARD")
-
     output_text = []
-    for parameter_name, parameter in base_model.named_parameters():
+    for parameter_name, parameter in base_model_sharded.named_parameters():
+        requires_grad = parameter.requires_grad
+        assert requires_grad == True
         output_text.append("{}\t{}".format(requires_grad, parameter_name))
 
     with open("data/output_base.txt", "w") as output_file:

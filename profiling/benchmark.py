@@ -56,6 +56,7 @@ def parse_args() -> Namespace:
 launch_time = time.time()
 os.makedirs("data/benchmark", exist_ok=True)
 output_path = "data/benchmark/{}.jsonl".format(launch_time)
+profiler_output_path = "data/trace/{}.json".format(launch_time)
 
 
 def write_metrics(metric_name: str, value: Optional[Any] = None) -> None:
@@ -138,7 +139,8 @@ def parse_profiler_output(
     key_average_event_list = profiler_output.key_averages()
     output: Dict[str, Dict[str, str | float | int]] = {}
     for evt in key_average_event_list:
-        if evt.trace_name is None:
+        trace_name = getattr(evt, "trace_name", None)
+        if trace_name is None:
             continue
         output[evt.trace_name] = {
             "start": evt.time_range.start,
@@ -167,6 +169,23 @@ def handle_profiler_trace(profiler_output: torch.autograd.profiler.profile):
     write_metrics("profiler_table", key_average_event_list.table())
     parsed_output = parse_profiler_output(profiler_output)
     write_metrics("profiler_output", parsed_output)
+    profiler_output.export_chrome_trace(profiler_output_path)
+
+
+class BenchmarkingDataset(Dataset):
+    def load_datasets(self) -> None:
+        """Load datasets into memory."""
+        self.train_ds = [
+            {
+                "id": row_id,
+                "input_ids": torch.zeros(1024),
+                "labels": torch.zeros(1024),
+                "attention_mask": torch.ones(1024),
+            }
+            for row_id in range(1024)
+        ]
+        self.eval_ds = self.train_ds
+        self.original_length = math.ceil(len(self.train_ds) / self.train_bs)
 
 
 def main(config: Config, model_name: str) -> None:
@@ -211,6 +230,8 @@ def main(config: Config, model_name: str) -> None:
             training_args.use_mp,
             get_is_flash_attention_supported(),
             training_args.max_seq_len,
+            local_rank,
+            training_args.low_cpu_mem_usage,
         )
         if lora_peft_config is not None:
             model = get_lora_model_from_base_model(model, lora_peft_config)
@@ -228,6 +249,8 @@ def main(config: Config, model_name: str) -> None:
             training_args.use_mp,
             training_args.use_activation_checkpointing,
             training_args.sharding_strategy,
+            local_rank,
+            training_args.low_cpu_mem_usage,
         )
 
     with track_time("set_activation_checkpointing"):
@@ -236,7 +259,7 @@ def main(config: Config, model_name: str) -> None:
 
     # load dataset
     with track_time("dataset_load"):
-        dataset = Dataset(
+        dataset = BenchmarkingDataset(
             config=config.dataset,
             tokenizer=tokenizer,
         )

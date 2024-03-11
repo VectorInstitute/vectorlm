@@ -7,11 +7,11 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
+import wandb
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from transformers import PreTrainedTokenizer
 
-import wandb
 from vectorlm.dataset import Dataset
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.save_utils import (
@@ -57,6 +57,7 @@ class Trainer:
             epoch.
         max_steps: An integer maximum number of training steps for this run.
         saving_steps: An integer for how often we save.
+
     """
 
     def __init__(
@@ -128,6 +129,7 @@ class Trainer:
             dataset: The `Dataset` class.
             optimizer: The training optimizer.
             lr_scheduler: The LR scheduler.
+
         """
         self.model = model
         self.tokenizer = tokenizer
@@ -141,6 +143,7 @@ class Trainer:
         Args:
         ----
             epoch: The current training epoch.
+
         """
         rank = dist.get_rank()
         gathered_processed_ids = _gather(
@@ -182,6 +185,7 @@ class Trainer:
         Returns:
         -------
             The checkpointed epoch to be used by the outer loop.
+
         """
         rank = dist.get_rank()
         step, epoch, ids = load_metadata(checkpoint_dir)
@@ -205,6 +209,7 @@ class Trainer:
         -------
             The checkpointed epoch. If no checkpoint exists, it returns a
             default value of 0.
+
         """
         checkpoint = checkpoint_exists(checkpoint_dir)
         if checkpoint:
@@ -231,6 +236,7 @@ class Trainer:
         ----
             train_batch: The training batch.
             epoch: The current training epoch.
+
         """
         if (
             self.config.checkpointing_enabled
@@ -257,6 +263,7 @@ class Trainer:
         ----
             batch: The training batch.
             epoch: The current training epoch.
+
         """
         ids = batch.pop("id").to(torch.cuda.current_device())
         batch["input_ids"] = batch["input_ids"].type(torch.LongTensor)
@@ -312,6 +319,7 @@ class Trainer:
         Args:
         ----
             epoch: The current training epoch.
+
         """
         print_main("Evaluating")
         self.model.eval()
@@ -348,6 +356,7 @@ class Trainer:
             loss: The loss being logged.
             epoch: The current training epoch.
             mode: One of `train` or `eval`.
+
         """
         if mode not in {"train", "eval"}:
             msg = "`mode` argument needs to be 'train' or 'eval'."

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [tool.ruff]
 line-length = 80
-select = ["ALL"]
-ignore = [
+lint.select = ["ALL"]
+lint.ignore = [
     "ANN101",
     "FBT",
     "D100",
@@ -15,9 +15,10 @@ ignore = [
     "N817",
     "TCH001",
     "E731",
-    "PLR0913"
+    "PLR0913",
+    "T201"
 ]
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 # Ignore `F401` (import violations) in all `__init__.py` files.
 "__init__.py" = ["F401", "D104"]

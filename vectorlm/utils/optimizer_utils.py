@@ -31,6 +31,7 @@ class PlateaeuWithWarmup(ReduceLROnPlateau):
             The maximum LR is determined by the number of warmup steps and the
             current step.
         base_lrs: A list of base LRs for the optimizer's param groups.
+
     """
 
     def __init__(
@@ -63,6 +64,7 @@ class PlateaeuWithWarmup(ReduceLROnPlateau):
                 otherwise the update is ignored.
             verbose: Whether to print messages to stdout every LR update.
             num_warmup_steps: The number of steps we warmup the LR for.
+
         """
         super().__init__(
             optimizer=optimizer,
@@ -85,6 +87,7 @@ class PlateaeuWithWarmup(ReduceLROnPlateau):
         ---------
             metrics: The metric we are using to measure change in LR.
             epoch: The current step.
+
         """
         if epoch is None:
             epoch = self.last_epoch + 1
@@ -159,9 +162,11 @@ def get_custom_scheduler(
         name: The name of the scheduler
         args: The scheduler specific args.
         kwargs: The scheduler specific kwargs.
-    
+
     Returns:
+    -------
         The scheduler.
+
     """
     if name == "plataeu-with-warmup":
         scheduler = PlateaeuWithWarmup(*args, **kwargs)
