@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import functools
 import re
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional
 
 import torch
 import torch.distributed as dist
@@ -95,7 +95,6 @@ def load_peft_model_and_tokenizer(
     return peft_model, tokenizer
 
 
-
 def load_model_and_tokenizer(
     path: str,
     use_mp: bool,
@@ -118,10 +117,12 @@ def load_model_and_tokenizer(
             then scatter them to the other workers.
         use_safetensors: Whether to use HF safe tensors. Note that this format
             loads significantly faster.
-
+        local_rank: The local rank of the current worker.
+        
     Returns:
     -------
         The model and tokenizer.
+
 
     """
     # load model
@@ -244,9 +245,14 @@ def shard_model(
     -------
         The sharded module with the requested configurations.
 
+
     """
     fsdp_cfg = fsdp_config(
-        use_mp, model, strategy, local_rank, low_cpu_mem_usage,
+        use_mp,
+        model,
+        strategy,
+        local_rank,
+        low_cpu_mem_usage,
     )
     if dist.get_rank() == 0:
         print(f"FSDP config: {fsdp_cfg}")

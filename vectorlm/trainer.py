@@ -8,6 +8,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 import wandb
+import wandb
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from transformers import PreTrainedTokenizer
@@ -58,6 +59,7 @@ class Trainer:
         max_steps: An integer maximum number of training steps for this run.
         saving_steps: An integer for how often we save.
 
+
     """
 
     def __init__(
@@ -76,6 +78,7 @@ class Trainer:
             original_dataset_length: The length of the original dataset
                 (divided by the batch size).
             timer_handle: Optional context manager for profiling.
+
         """
         self.config = config
         self.gas = config.gradient_accumulation_steps
@@ -103,7 +106,8 @@ class Trainer:
             ds_orig_length / dist.get_world_size(),
         )
         self.num_update_steps_per_epoch = max(
-            sharded_ds_orig_len // self.gas, 1,
+            sharded_ds_orig_len // self.gas,
+            1,
         )
         self.max_steps = math.ceil(
             self.config.epochs * self.num_update_steps_per_epoch,
@@ -129,6 +133,7 @@ class Trainer:
             dataset: The `Dataset` class.
             optimizer: The training optimizer.
             lr_scheduler: The LR scheduler.
+
 
         """
         self.model = model
@@ -186,6 +191,7 @@ class Trainer:
         -------
             The checkpointed epoch to be used by the outer loop.
 
+
         """
         rank = dist.get_rank()
         step, epoch, ids = load_metadata(checkpoint_dir)
@@ -209,6 +215,7 @@ class Trainer:
         -------
             The checkpointed epoch. If no checkpoint exists, it returns a
             default value of 0.
+
 
         """
         checkpoint = checkpoint_exists(checkpoint_dir)
@@ -237,13 +244,12 @@ class Trainer:
             train_batch: The training batch.
             epoch: The current training epoch.
 
+
         """
-        if (
-            self.config.checkpointing_enabled
-        ) and (
+        if (self.config.checkpointing_enabled) and (
             (self.tr_step + 1) % self.saving_steps == 0
         ):
-                self.save_checkpoint(epoch)
+            self.save_checkpoint(epoch)
 
         num_tokens = len(train_batch["input_ids"].flatten())
         with self.timer_handle("train_step", {"num_tokens": num_tokens}):
@@ -255,7 +261,6 @@ class Trainer:
         self.tr_step += 1
         return train_loss, test_loss
 
-
     def train_step(self, batch: dict[str, torch.Tensor], epoch: int) -> float:
         """Step training once.
 
@@ -263,6 +268,7 @@ class Trainer:
         ----
             batch: The training batch.
             epoch: The current training epoch.
+
 
         """
         ids = batch.pop("id").to(torch.cuda.current_device())
@@ -320,6 +326,7 @@ class Trainer:
         ----
             epoch: The current training epoch.
 
+
         """
         print_main("Evaluating")
         self.model.eval()
@@ -330,7 +337,10 @@ class Trainer:
                 batch["input_ids"] = batch["input_ids"].type(torch.LongTensor)
                 num_tokens = len(batch["input_ids"].flatten())
                 batch["labels"] = batch["labels"].type(torch.LongTensor)
-                batch = {k: v.to(torch.cuda.current_device()) for k, v in batch.items()}
+                batch = {
+                    k: v.to(torch.cuda.current_device())
+                    for k, v in batch.items()
+                }
 
                 with self.timer_handle("eval_step", {"num_tokens": num_tokens}):
                     out = self.model(**batch)
@@ -356,6 +366,7 @@ class Trainer:
             loss: The loss being logged.
             epoch: The current training epoch.
             mode: One of `train` or `eval`.
+
 
         """
         if mode not in {"train", "eval"}:
@@ -394,9 +405,7 @@ class Trainer:
 
 
 def _gather(x: torch.Tensor) -> torch.Tensor:
-    output_tensors = [
-        x.clone() for _ in range(dist.get_world_size())
-    ]
+    output_tensors = [x.clone() for _ in range(dist.get_world_size())]
     dist.all_gather(output_tensors, x)
     return torch.cat(output_tensors, dim=0)
 
