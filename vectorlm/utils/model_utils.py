@@ -27,25 +27,23 @@ from transformers import (
 )
 
 
-def initialize_lora_model_and_tokenizer(
-    path: str,
-    use_mp: bool,
-    use_fa: bool,
-    max_seq_len: int,
-    peft_config_dict: Dict[str, Any],
-) -> tuple[PeftModel, PreTrainedTokenizer]:
+def get_lora_model_from_base_model(
+    base_model: nn.Module, peft_config_dict: Dict
+) -> PeftModel:
     """
-    Initialize lora peft configuration for a non-lora model.
-    """
-    model, tokenizer = load_model_and_tokenizer(path, use_mp, use_fa, max_seq_len)
+    Initialize lora peft configuration from a non-lora model.
 
-    # Replace task type string in config with TaskType member.
+    Args:
+    -----
+        base_model: HuggingFace Transformer model to wrap.
+        peft_config_dict: configuration from yaml config file.
+    """
     task_type_str = peft_config_dict["task_type"]
     task_type = getattr(TaskType, task_type_str)
     lora_config = LoraConfig(**{**peft_config_dict, "task_type": task_type})
 
-    lora_model = get_peft_model(model, lora_config)
-    return lora_model, tokenizer
+    lora_model = get_peft_model(base_model, lora_config)
+    return lora_model
 
 
 def load_peft_model_and_tokenizer(
@@ -182,7 +180,7 @@ def fsdp_config(use_mp: bool, model: nn.Module, strategy: str) -> dict[str, Any]
 
 def shard_model(
     model: nn.Module,
-    layer_to_wrap: nn.Module,
+    layer_to_wrap: type[nn.Module],
     use_mp: bool,
     use_activation_checkpointing: bool,
     strategy: str,
@@ -217,7 +215,7 @@ def shard_model(
 
 def hook_activation_checkpointing(
     model: nn.Module,
-    layer: nn.Module,
+    layer: type[nn.Module],
 ) -> None:
     """Set activation checkpointing.
 

@@ -22,9 +22,10 @@ from vectorlm.utils.data_utils import Config
 from vectorlm.utils.misc_utils import cleanup, setup, wandb_setup
 from vectorlm.utils.model_utils import (
     hook_activation_checkpointing,
-    initialize_lora_model_and_tokenizer,
+    load_model_and_tokenizer,
     shard_model,
     get_submodule_by_pattern,
+    get_lora_model_from_base_model,
 )
 from vectorlm.utils.optimizer_utils import get_custom_scheduler
 from vectorlm.utils.save_utils import save_consolidated_model
@@ -154,15 +155,18 @@ def main(config: Config, model_name: str) -> None:
 
     # load model and tokenizer
     state_dict_path = getattr(config, "state_dict", None)
+    lora_peft_config = getattr(config, "state_dict", None)
 
     with track_time("model_load"):
-        model, tokenizer = initialize_lora_model_and_tokenizer(
+        model, tokenizer = load_model_and_tokenizer(
             model_name,
             training_args.use_mp,
             get_is_flash_attention_supported(),
             training_args.max_seq_len,
-            config.lora_peft_config,
         )
+        if lora_peft_config is not None:
+            model = get_lora_model_from_base_model(model, lora_peft_config)
+
         decoder_layer_module = get_submodule_by_pattern(model, r"DecoderLayer$")
 
     if decoder_layer_module is None:

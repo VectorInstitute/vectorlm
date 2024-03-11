@@ -3,6 +3,7 @@ Test model loading, sharding, and forward/backward.
 """
 
 from collections import Counter, defaultdict
+import re
 
 import pytest
 import torch
@@ -17,15 +18,14 @@ from torch.distributed.fsdp.fully_sharded_data_parallel import (
 from transformers.models.opt.modeling_opt import OPTDecoderLayer
 
 from vectorlm.utils.model_utils import (
-    hook_activation_checkpointing,
-    initialize_lora_model_and_tokenizer,
+    get_lora_model_from_base_model,
     load_model_and_tokenizer,
     shard_model,
     get_submodule_by_pattern,
 )
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture()
 def setup_and_teardown_torch_process_group():
     # Setup
     dist.init_process_group(
@@ -55,17 +55,15 @@ def lora_peft_config():
     }
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture()
 def base_model():
     model, tokenizer = load_model_and_tokenizer("facebook/opt-125m", True, False, 1024)
     return model
 
 
 @pytest.fixture()
-def lora_model(lora_peft_config):
-    lora_model, tokenizer = initialize_lora_model_and_tokenizer(
-        "facebook/opt-125m", True, False, 1024, lora_peft_config
-    )
+def lora_model(base_model, lora_peft_config):
+    lora_model = get_lora_model_from_base_model(base_model, lora_peft_config)
     return lora_model
 
 
@@ -110,21 +108,13 @@ def test_load_model_and_tokenizer():
     print("type(model): {}".format(type(model)))
 
 
-def test_load_lora_model_and_tokenizer(lora_peft_config):
-    """
-    Test load base model and tokenizer.
-    """
-    lora_model, tokenizer = initialize_lora_model_and_tokenizer(
-        "facebook/opt-125m", True, True, 1024, lora_peft_config
-    )
-
-    print("type(lora_model): {}".format(type(lora_model)))
-
-
-def test_match_submodule_by_pattern(base_model):
+def test_match_submodule_by_pattern(base_model, lora_model):
     """
     Test selecting DecoderLayer class from container.
     """
+
+    submodule = get_submodule_by_pattern(base_model, r"DecoderLayer$")
+    assert submodule == OPTDecoderLayer
 
     submodule = get_submodule_by_pattern(base_model, r"DecoderLayer$")
     assert submodule == OPTDecoderLayer
@@ -159,28 +149,25 @@ def test_get_module_types(lora_model_sharded):
         output_file.write("\n".join(output_text))
 
 
-def test_partition_lora_model(lora_model, setup_and_teardown_torch_process_group):
+def test_fsdp_lora_model_require_grad(
+    lora_model_sharded, setup_and_teardown_torch_process_group
+):
     """
     Test partitioning lora peft model.
     """
-    # # lora.Linear is a submodule of OPTDecoderLayer.
-    # for index, module in enumerate(lora_model.modules()):
-    #     print(index, module)
-
-    model_sharded = shard_model(
-        lora_model, nn.modules.linear.Linear, True, True, "FULL_SHARD"
-    )
-    model_sharded = FSDP(
-        model_sharded, use_orig_params=True, device_id=torch.cuda.current_device()
-    )
 
     requires_grad_counters = defaultdict(Counter)
 
     output_text = []
     reference_device = None
-    for parameter_name, parameter in model_sharded.named_parameters():
+    for parameter_name, parameter in lora_model_sharded.named_parameters():
         requires_grad = parameter.requires_grad
         requires_grad_counters[requires_grad][parameter_name] += 1
+        if re.search("lora_[A|B]", parameter_name) is not None:
+            assert requires_grad == True, parameter_name
+        else:
+            assert requires_grad == False, parameter_name
+
         output_text.append(
             "{}\t{}\t{}".format(requires_grad, parameter.device, parameter_name)
         )
@@ -190,6 +177,8 @@ def test_partition_lora_model(lora_model, setup_and_teardown_torch_process_group
 
         reference_device = parameter.device
 
+    # # Uncomment line below to see all parameter names.
+    # print(requires_grad_counters)
     with open("output.txt", "w") as output_file:
         output_file.write("\n".join(output_text))
 

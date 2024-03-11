@@ -7,6 +7,8 @@ import itertools
 import subprocess
 import time
 
+from tqdm.auto import tqdm
+
 model_list = [
     "/model-weights/" + model_name
     for model_name in [
@@ -14,7 +16,6 @@ model_list = [
         "Llama-2-7b-hf",
         "Llama-2-13b-hf",
         "Mistral-7B-v0.1",
-        "t5-xl-lm-adapt",
     ]
 ]
 
@@ -23,7 +24,7 @@ slurm_flags_options = {
     "mem": [0],
     "ntasks-per-node": [1],
     "cpus-per-gpu": [6],
-    "gres": ["gpu:{}".format(n + 1) for n in range(1)],
+    "gres": ["gpu:{}".format(n + 1) for n in range(8)],
     "partition": ["t4v2", "a40", "a100"],
 }
 
@@ -32,8 +33,9 @@ slurm_flags_extra = {"time": "00:30:00", "qos": "scavenger"}
 slurm_pos_args_options = [["examples/launch_lora_benchmark.sh"], model_list]
 timestamp = int(time.time())
 
+args_list: List[List[str]] = []
 for index, (flag_values, pos_args_option) in enumerate(
-    zip(
+    itertools.product(
         itertools.product(*(slurm_flags_options.values())),
         itertools.product(*slurm_pos_args_options),
     )
@@ -54,5 +56,10 @@ for index, (flag_values, pos_args_option) in enumerate(
         args.extend(arg)
 
     args.extend(pos_args_option)
-
+    args_list.append(args)
     print(" ".join(args))
+
+input("\nPress ENTER to launch {} job(s)".format(len(args_list)))
+
+for args in tqdm(args_list):
+    subprocess.run(args)
