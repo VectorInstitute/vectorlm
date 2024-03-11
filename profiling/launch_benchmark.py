@@ -38,7 +38,7 @@ slurm_flags_options = {
 
 slurm_flags_extra = {"time": "00:30:00", "qos": qos_selected}
 
-slurm_pos_args_options = [["examples/launch_lora_benchmark.sh"], model_list]
+slurm_pos_args_options = [["profiling/launch_lora_benchmark.sh"], model_list]
 timestamp = int(time.time())
 
 args_list: List[List[str]] = []
