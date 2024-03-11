@@ -2,12 +2,18 @@
 Create SLURM jobs running the LoRA benchmark. 
 """
 
-from typing import List
+import argparse
 import itertools
 import subprocess
 import time
+from typing import List
 
 from tqdm.auto import tqdm
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--qos", required=False)
+cli_args = parser.parse_args()
+qos_selected = cli_args.qos
 
 model_list = [
     "/model-weights/" + model_name
@@ -28,7 +34,7 @@ slurm_flags_options = {
     "partition": ["t4v2", "a40", "a100"],
 }
 
-slurm_flags_extra = {"time": "00:30:00", "qos": "scavenger"}
+slurm_flags_extra = {"time": "00:30:00", "qos": qos_selected}
 
 slurm_pos_args_options = [["examples/launch_lora_benchmark.sh"], model_list]
 timestamp = int(time.time())
@@ -52,8 +58,9 @@ for index, (flag_values, pos_args_option) in enumerate(
     keys = list(slurm_flags_options.keys()) + list(extra_flags.keys())
     values = list(flag_values) + list(extra_flags.values())
     for key, value in zip(keys, values):
-        arg = ("--{}".format(key), str(value))
-        args.extend(arg)
+        if value is not None:
+            arg = ("--{}".format(key), str(value))
+            args.extend(arg)
 
     args.extend(pos_args_option)
     args_list.append(args)
