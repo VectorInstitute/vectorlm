@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import functools
+import re
 from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.distributed as dist
 from peft import LoraConfig, PeftConfig, PeftModel, TaskType, get_peft_model
+from peft.utils.other import fsdp_auto_wrap_policy
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
@@ -15,11 +17,6 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     FullyShardedDataParallel as FSDP,
-)
-from torch.distributed.fsdp.wrap import (
-    transformer_auto_wrap_policy,
-    _or_policy,
-    lambda_auto_wrap_policy,
 )
 
 from transformers import (
@@ -148,17 +145,13 @@ def load_model_and_tokenizer(
     return model, tokenizer
 
 
-def fsdp_config(
-    use_mp: bool,
-    layer_to_wrap: nn.Module,
-    strategy: str,
-) -> dict[str, Any]:
+def fsdp_config(use_mp: bool, model: nn.Module, strategy: str) -> dict[str, Any]:
     """Get FSDP config.
 
     Args:
     ----
         use_mp: Whether to use mixed-precision.
-        layer_to_wrap: The layer we are wrapping using FSDP.
+        model_to_wrap: The HuggingFace model to wrap using FSDP.
         strategy: The sharding strategy to use.
 
     Returns:
@@ -179,29 +172,9 @@ def fsdp_config(
         )
         ret_dict["mixed_precision"] = mp_policy
 
-    # See https://github.com/facebookresearch/llama-recipes/blob/674b37ee6/src/llama_recipes/utils/fsdp_utils.py#L9
-    def lambda_policy_fn(module):
-        if (
-            len(list(module.named_children())) == 0
-            and getattr(module, "weight", None) is not None
-            and module.weight.requires_grad
-        ):
-            return True
-        return False
-
-    lambda_policy = functools.partial(
-        lambda_auto_wrap_policy, lambda_fn=lambda_policy_fn
-    )
-    transformer_wrap_policy = functools.partial(
-        transformer_auto_wrap_policy, transformer_layer_cls=[layer_to_wrap]
-    )
-
-    auto_wrap_policy = functools.partial(
-        _or_policy, policies=[lambda_policy, transformer_wrap_policy]
-    )
     sharding_strategy = getattr(ShardingStrategy, strategy)
 
-    ret_dict["auto_wrap_policy"] = auto_wrap_policy
+    ret_dict["auto_wrap_policy"] = fsdp_auto_wrap_policy(model)
     ret_dict["sharding_strategy"] = sharding_strategy
     ret_dict["device_id"] = torch.cuda.current_device()
     return ret_dict
@@ -228,7 +201,7 @@ def shard_model(
     -------
         The sharded module with the requested configurations.
     """
-    fsdp_cfg = fsdp_config(use_mp, layer_to_wrap, strategy)
+    fsdp_cfg = fsdp_config(use_mp, model, strategy)
     if dist.get_rank() == 0:
         print(f"FSDP config: {fsdp_cfg}")
     model = FSDP(model, **fsdp_cfg)
@@ -265,3 +238,35 @@ def hook_activation_checkpointing(
         checkpoint_wrapper_fn=non_reentrant_wrapper,
         check_fn=check_fn,
     )
+
+
+def get_submodule_by_pattern(
+    module: nn.Module, pattern: str
+) -> Optional[type[nn.Module]]:
+    """
+    Return the first module.cls that matches pattern,
+    at least partially.
+
+    With reference to get_module_class_from_name from HuggingFace
+    accelerate `FullyShardedDataParallelPlugin`.
+
+    Args:
+    -----
+        module: Layer container
+        pattern: regular expression string.
+
+    Returns:
+    --------
+        Matched layer (nn.Module) or None if not matched.
+    """
+    modules_children = list(module.children())
+    module_name = module.__class__.__name__
+    if re.search(pattern, module_name) is not None:
+        return module.__class__
+    elif len(modules_children) == 0:
+        return
+    else:
+        for child_module in modules_children:
+            module_class = get_submodule_by_pattern(child_module, pattern)
+            if module_class is not None:
+                return module_class

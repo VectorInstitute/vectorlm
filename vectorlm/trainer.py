@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import math
 import os
 from typing import Any
@@ -27,6 +28,15 @@ from vectorlm.utils.save_utils import (
 )
 
 
+@contextmanager
+def timer_placeholder(task_name: str):
+    try:
+        yield  # start code block
+    finally:
+        # run before exiting
+        return
+
+
 class Trainer:
     """Main trainer class.
 
@@ -49,11 +59,13 @@ class Trainer:
         saving_steps: An integer for how often we save.
     """
 
-    def __init__(self,
-            config: Config,
-            enable_wandb_logging: bool,
-            original_dataset_length: int,
-        ) -> None:
+    def __init__(
+        self,
+        config: Config,
+        enable_wandb_logging: bool,
+        original_dataset_length: int,
+        timer_handle=timer_placeholder,
+    ) -> None:
         """Initialize the Trainer class.
 
         Args:
@@ -62,6 +74,7 @@ class Trainer:
             enable_wandb_logging: Whether to enable wandb logging.
             original_dataset_length: The length of the original dataset
                 (divided by the batch size).
+            timer_handle: Optional context manager for profiling.
         """
         self.config = config
         self.gas = config.gradient_accumulation_steps
@@ -80,6 +93,7 @@ class Trainer:
         self.num_update_steps_per_epoch = None
         self.max_steps = None
         self.saving_steps = None
+        self.timer_handle = timer_handle
         self._post_process(original_dataset_length)
 
     def _post_process(self, ds_orig_length: int) -> None:
@@ -145,9 +159,16 @@ class Trainer:
         )
         if rank == 0:
             save_metadata(save_dir, meta_dict)
-        save_model(self.model, save_dir, rank)
-        save_optimizer(self.optimizer, self.model, save_dir, rank)
-        save_scheduler(self.lr_scheduler, save_dir, rank)
+
+        with self.timer_handle("trainer_save_model"):
+            save_model(self.model, save_dir, rank)
+
+        with self.timer_handle("trainer_save_optimizer"):
+            save_optimizer(self.optimizer, self.model, save_dir, rank)
+
+        with self.timer_handle("train_save_scheduler"):
+            save_scheduler(self.lr_scheduler, save_dir, rank)
+
         dist.barrier()
 
     def load_checkpoint(self, checkpoint_dir: str) -> int:
@@ -218,7 +239,9 @@ class Trainer:
         ):
                 self.save_checkpoint(epoch)
 
-        train_loss = self.train_step(train_batch, epoch)
+        num_tokens = len(train_batch["input_ids"].flatten())
+        with self.timer_handle("train_step", {"num_tokens": num_tokens}):
+            train_loss = self.train_step(train_batch, epoch)
 
         test_loss = None
         if self.tr_step % self.logging_steps == 0:
@@ -297,10 +320,14 @@ class Trainer:
             with torch.no_grad():
                 batch.pop("id")
                 batch["input_ids"] = batch["input_ids"].type(torch.LongTensor)
+                num_tokens = len(batch["input_ids"].flatten())
                 batch["labels"] = batch["labels"].type(torch.LongTensor)
                 batch = {k: v.to(torch.cuda.current_device()) for k, v in batch.items()}
-                out = self.model(**batch)
-                eval_loss += out.loss
+
+                with self.timer_handle("eval_step", {"num_tokens": num_tokens}):
+                    out = self.model(**batch)
+                    eval_loss += out.loss
+
         gathered_eval_loss = _gather(eval_loss.reshape(1)).mean().item()
         mean_eval_loss = gathered_eval_loss / len(self.dataset.eval_dataloader)
 
