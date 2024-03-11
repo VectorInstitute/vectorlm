@@ -12,6 +12,7 @@ class Config:
     ----------
         yaml_path: A path to the yaml file that stores our config.
         to_box: A boolean indicating whether to box our config.
+
     """
 
     def __init__(self, yaml_path: str, to_box: bool = True) -> None:
@@ -21,6 +22,7 @@ class Config:
         ----
             yaml_path: The string path to the config yaml.
             to_box: Defines whether this initialization will use dot notation.
+
         """
         self.yaml_path = yaml_path
         self.to_box = to_box
@@ -55,6 +57,7 @@ class DataCollatorWithPadding:
         ignore_index: A value used for ignoring a given token in labels.
         max_seq_len: An integer denoting the maximum sequence length.
         padding_side: A side of the sequence that gets padded.
+
     """
 
     def __init__(
@@ -73,6 +76,7 @@ class DataCollatorWithPadding:
                 loss.
             max_seq_len: The maximum sequence length to expect.
             padding_side: The side of the sequence which is padded.
+
         """
         self.pad_token_id = pad_token_id
         self.ignore_index = ignore_index
@@ -99,6 +103,7 @@ class DataCollatorWithPadding:
         Returns:
         -------
             A dictionary containing a batch that we can input to our model.
+
         """
         batch = {}
         keys = ["input_ids", "labels"]

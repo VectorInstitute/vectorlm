@@ -28,6 +28,7 @@ class Dataset:
         train_bs: A per-device batch size for training.
         eval_bs: A per-device batch size for evaluating.
         _processed_ids: A tensor of already trained examples.
+
     """
 
     def __init__(
@@ -41,6 +42,7 @@ class Dataset:
         ----
             config: The dataset config.
             tokenizer: The input tokenizer.
+
         """
         self.config = config
         self._processed_ids = torch.tensor([]).to(torch.cuda.current_device())

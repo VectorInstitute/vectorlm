@@ -28,6 +28,7 @@ def checkpoint_exists(output_dir: str) -> bool:
     Returns:
     -------
         Returns whether a checkpoint exists.
+
     """
     if os.path.isdir(os.path.join(output_dir, "checkpoints")):
         return True
@@ -44,6 +45,7 @@ def save_metadata(
     ----
         out_dir: The directory to save to.
         meta_dict: The dictionary containing the meta data.
+
     """
     os.makedirs(out_dir, exist_ok=True)
     torch.save(meta_dict, os.path.join(out_dir, "meta_data.pkl"))
@@ -62,6 +64,7 @@ def load_metadata(
     -------
         A tuple containing the checkpointed step, epoch, and the processed
             training dataset ids.
+
     """
     save_path = os.path.join(in_dir, "meta_data.pkl")
     meta_dict = torch.load(save_path)
@@ -81,6 +84,7 @@ def get_latest_checkpoint_dir(folder_path: str) -> str:
     Returns:
     -------
         The subpath (i.e. two levels) of the latest checkpoint's directory.
+
     """
     epoch_pattern = re.compile(r"^epoch_(\d+)$")
     folder_pattern = re.compile(r"^checkpoint_(\d+)$")
@@ -112,6 +116,7 @@ def save_model(model: nn.Module, output_dir: str, rank: int) -> None:
         model: The sharded model.
         output_dir: The checkpointing directory.
         rank: The worker's rank.
+
     """
     os.makedirs(output_dir, exist_ok=True)
     weights_name = f"model_rank{rank}.bin"
@@ -131,6 +136,7 @@ def load_model(model: nn.Module, input_dir: str, rank: int) -> None:
         model: The sharded model.
         input_dir: The checkpointing directory.
         rank: The worker's rank.
+
     """
     weights_name = f"model_rank{rank}.bin"
     input_model_file = os.path.join(input_dir, weights_name)
@@ -154,6 +160,7 @@ def save_consolidated_model(
         model: The sharded model.
         save_dir: The checkpointing directory.
         rank: The worker's rank.
+
     """
     os.makedirs(save_dir, exist_ok=True)
     cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
@@ -178,6 +185,7 @@ def save_optimizer(
         model: The sharded model.
         output_dir: The checkpointing directory.
         rank: The worker's rank.
+
     """
     opt_name = f"optimizer_rank{rank}.bin"
     output_optimizer_file = os.path.join(output_dir, opt_name)
@@ -207,6 +215,7 @@ def load_optimizer(
         model: The sharded model.
         input_dir: The checkpointing directory.
         rank: The worker's rank.
+
     """
     opt_name = f"optimizer_rank{rank}.bin"
     input_optimizer_file = os.path.join(input_dir, opt_name)
@@ -237,6 +246,7 @@ def save_scheduler(
         scheduler: The LR scheduler.
         output_dir: The checkpointing directory.
         rank: The worker's rank.
+
     """
     sched_name = f"scheduler_rank{rank}.bin"
     output_scheduler_file = os.path.join(output_dir, sched_name)
@@ -258,6 +268,7 @@ def load_scheduler(
         scheduler: The LR scheduler.
         input_dir: The checkpointing directory.
         rank: The worker's rank.
+
     """
     sched_name = f"scheduler_rank{rank}.bin"
     input_scheduler_file = os.path.join(input_dir, sched_name)
