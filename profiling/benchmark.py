@@ -55,6 +55,7 @@ def parse_args() -> Namespace:
 # unix timestamp
 launch_time = time.time()
 os.makedirs("data/benchmark", exist_ok=True)
+os.makedirs("data/trace", exist_ok=True)
 output_path = "data/benchmark/{}.jsonl".format(launch_time)
 profiler_output_path = "data/trace/{}.json".format(launch_time)
 
