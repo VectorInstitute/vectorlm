@@ -223,7 +223,7 @@ def main(config: Config, model_name: str) -> None:
 
     # load model and tokenizer
     state_dict_path = getattr(config, "state_dict", None)
-    lora_peft_config = getattr(config, "state_dict", None)
+    lora_peft_config = getattr(config.train_parameters, "lora_peft_config", None)
 
     with track_time("model_load"):
         model, tokenizer = load_model_and_tokenizer(

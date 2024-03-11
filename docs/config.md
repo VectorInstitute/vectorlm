@@ -29,6 +29,7 @@ The key-value pairs stored under `wandb_config` are directly passed into the [`w
 * `use_activation_checkpointing`: Whether to use activation checkpointing. This greatly reduces memory footprint as only a few intermediate activations as saved during the forward pass, and are then recomputed for the backward pass on the fly. However, the tradeoff between compute vs. memory usually makes this worth it.
 * `use_flash_attention`: Whether to use Flash Attention. If it is supported for your model in HuggingFace, you can enable this option.
 * `low_cpu_mem_usage`: Whether to efficiently load the model. If enabled, the model weights are only loaded once on rank 0 and are broadcasted to the rest of the world from the main rank. It will prevent the CPU memory from exploding when loading large models (e.g. LLaMa-70B).
+* `lora_peft_config`: Optionally, fine-tune the model using LoRA, using the HuggingFace PEFT implementation. Uncomment this section to enable LoRA. If LoRA is enabled, training output will consist only of the lora adapters. You can merge the lora adapter into the base model using utilities from the PEFT library.
 
 ### Gradient
 

@@ -20,6 +20,14 @@ train_parameters:
   use_flash_attention: True
   low_cpu_mem_usage: True
 
+  # # Uncomment below to enable LoRA
+  # lora_peft_config:
+  #   task_type: CAUSAL_LM
+  #   inference_mode: False
+  #   r: 8
+  #   lora_alpha: 32
+  #   lora_dropout: 0.1
+
   # Gradient norm clipping
   max_grad_norm: 1
   gradient_accumulation_steps: 4
