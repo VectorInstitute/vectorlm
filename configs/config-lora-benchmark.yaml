@@ -1,0 +1,66 @@
+enable_wandb_logging: True
+
+lora_peft_config:
+  task_type: CAUSAL_LM
+  inference_mode: False
+  r: 8
+  lora_alpha: 32
+  lora_dropout: 0.1
+
+wandb_config:
+  project: vector-lm-verify
+  name: benchmark-lora
+
+train_parameters:
+  output_dir: /tmp/lora-benchmark
+  max_seq_len: 128
+  epochs: 1
+  seed: 11
+
+  # Sharding strategy
+  sharding_strategy: FULL_SHARD
+
+  # Memory
+  use_mp: True
+  use_activation_checkpointing: True
+  # use_flash_attention is automatically enabled 
+  # for CUDA capability > 8.0
+
+  # Gradient norm clipping
+  max_grad_norm: 1
+  gradient_accumulation_steps: 4
+
+  # Optimizer
+  optimizer:
+    lr: 2.0e-5
+    weight_decay: 0.1
+    betas: [0.9, 0.95]
+    eps: 1.0e-5
+
+  # Scheduler
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.05
+
+  # Checkpointing
+  checkpointing_enabled: True
+  logging_steps: 500
+  save_frequency: 0.25
+
+dataset:
+  ignore_index: -100
+  eval_bs: 8
+  train_bs: 8
+  train_ds: data/processed/gsm8k-question/train
+  eval_ds: data/processed/gsm8k-question/test
+
+dataset_preprocess:
+  ignore_index: -100
+  dataset_format: hf
+  data_field: question
+  packing_type: partial
+  add_bos_eos_tokens: True
+  from_disk: True
+  load_path: data/raw/gsm8k
+  split: train
+  save_path: data/processed/gsm8k-question/train
+  truncate: False
