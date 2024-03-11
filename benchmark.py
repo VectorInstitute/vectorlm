@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 import torch
 import torch.distributed as dist
 from torch.optim import AdamW
+from torch.profiler import ProfilerActivity
 from tqdm import tqdm
 from transformers import set_seed
 from peft.utils.other import fsdp_auto_wrap_policy
@@ -125,12 +126,59 @@ def get_slurm_env() -> Dict[str, str]:
     return output
 
 
+def parse_profiler_output(
+    profiler_output: torch.autograd.profiler.profile,
+) -> Dict[str, Dict[str, str | float | int]]:
+    """
+    Parse profiler_output to obtain dictionary of metrics.
+
+    Returns:
+        Dictionary mapping event name to dictionary of metrics.
+    """
+    key_average_event_list = profiler_output.key_averages()
+    output: Dict[str, Dict[str, str | float | int]] = {}
+    for evt in key_average_event_list:
+        if evt.trace_name is None:
+            continue
+        output[evt.trace_name] = {
+            "start": evt.time_range.start,
+            "elapsed": evt.time_range.elapsed_us(),
+            "args": (
+                evt.thread
+                if not evt.is_remote
+                else f'" node_id:{evt.node_id}, thread_id:{evt.thread} "'
+            ),
+        }
+
+    return output
+
+
+def handle_profiler_trace(profiler_output: torch.autograd.profiler.profile):
+    """
+    Log torch profile to disk.
+    This function is to be invoked as a callback for on_track_ready.
+
+    Args:
+    -----
+        profile: from Torch profiler.
+    """
+    print(profiler_output)
+    key_average_event_list = profiler_output.key_averages()
+    write_metrics("profiler_table", key_average_event_list.table())
+    parsed_output = parse_profiler_output(profiler_output)
+    write_metrics("profiler_output", parsed_output)
+
+
 def main(config: Config, model_name: str) -> None:
     """Define the main calling function."""
     write_metrics("model_name", model_name)
     write_metrics("config", {**config.__dict__})
     write_metrics("device_info", get_device_info())
     write_metrics("slurm_info", get_slurm_env())
+
+    profiler_schedule = torch.profiler.schedule(
+        skip_first=10, wait=5, warmup=1, active=3, repeat=2
+    )
 
     training_args = config.train_parameters
 
@@ -230,34 +278,42 @@ def main(config: Config, model_name: str) -> None:
     trainer.dataset.setup_dataloaders()
     checkpointed_epoch = 0
 
-    for epoch in range(checkpointed_epoch, training_args.epochs):
-        trainer.model.train()
-        train_dl_iterator = iter(dataset.train_dataloader)
-        for _ in tqdm(
-            range(len(dataset.train_dataloader)),
-            disable=rank != 0,
-            file=sys.__stdout__,
-        ):
-            batch = next(train_dl_iterator)
-            trainer.step(batch, epoch)
+    # See pytorch.org/tutorials/recipes/recipes/profiler_recipe.html
+    with torch.profiler.profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        schedule=profiler_schedule,
+        on_trace_ready=handle_profiler_trace,
+    ) as profile_handle:
+        for epoch in range(checkpointed_epoch, training_args.epochs):
+            trainer.model.train()
+            train_dl_iterator = iter(dataset.train_dataloader)
+            for _ in tqdm(
+                # range(len(dataset.train_dataloader)),
+                range(7 * 13),
+                disable=rank != 0,
+                file=sys.__stdout__,
+            ):
+                batch = next(train_dl_iterator)
+                trainer.step(batch, epoch)
+                profile_handle.step()
 
-        if epoch == training_args.epochs - 1:
-            with track_time("save_final"):
-                hf_save_dir = os.path.join(training_args.output_dir, "final-model")
-        else:
-            with track_time("save_checkpoint"):
-                hf_save_dir = os.path.join(
-                    training_args.output_dir,
-                    "checkpoints",
-                    f"epoch_{epoch}",
-                    "end-epoch-model",
-                )
-        with track_time("save_consolidated"):
-            save_consolidated_model(trainer.model, hf_save_dir, rank)
-            if rank == 0:
-                tokenizer.save_pretrained(hf_save_dir)
+            if epoch == training_args.epochs - 1:
+                with track_time("save_final"):
+                    hf_save_dir = os.path.join(training_args.output_dir, "final-model")
+            else:
+                with track_time("save_checkpoint"):
+                    hf_save_dir = os.path.join(
+                        training_args.output_dir,
+                        "checkpoints",
+                        f"epoch_{epoch}",
+                        "end-epoch-model",
+                    )
+            with track_time("save_consolidated"):
+                save_consolidated_model(trainer.model, hf_save_dir, rank)
+                if rank == 0:
+                    tokenizer.save_pretrained(hf_save_dir)
 
-        dataset.reset_dataloaders()
+            dataset.reset_dataloaders()
 
 
 if __name__ == "__main__":
