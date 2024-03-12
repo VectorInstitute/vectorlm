@@ -23,4 +23,4 @@ export LOGLEVEL=INFO
 export PYTHONFAULTHANDLER=1
 # export CUDA_LAUNCH_BLOCKING=0
 
-torchrun --nnodes=1 --nproc-per-node=4 llama_example.py --yaml_path ../configs/config.yaml
+torchrun --nnodes=1 --nproc-per-node=${SLURM_STEP_GPUS} llama_example.py --yaml_path ../configs/config.yaml
