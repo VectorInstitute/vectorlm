@@ -253,6 +253,14 @@ def main(config: Config, model_name: str) -> None:
             local_rank,
             training_args.low_cpu_mem_usage,
         )
+        per_device_parameter_count = sum(p.numel() for p in model.parameters())
+        track_time(
+            "parameter_count",
+            {
+                "per_device": per_device_parameter_count,
+                "total": per_device_parameter_count * world_size,
+            },
+        )
 
     with track_time("set_activation_checkpointing"):
         if training_args.use_activation_checkpointing:
