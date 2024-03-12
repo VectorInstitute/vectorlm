@@ -118,7 +118,7 @@ def load_model_and_tokenizer(
         use_safetensors: Whether to use HF safe tensors. Note that this format
             loads significantly faster.
         local_rank: The local rank of the current worker.
-        
+
     Returns:
     -------
         The model and tokenizer.
@@ -139,12 +139,14 @@ def load_model_and_tokenizer(
     if not low_cpu_mem_usage or local_rank == 0:
         model = AutoModelForCausalLM.from_pretrained(
             path,
+            low_cpu_mem_usage=True,
             **model_args,
         )
     else:
         with torch.device("meta"):
             model = AutoModelForCausalLM.from_pretrained(
                 path,
+                low_cpu_mem_usage=True,
                 **model_args,
             )
 
