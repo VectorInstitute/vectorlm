@@ -3,6 +3,7 @@ Parse benchmarking results
 to generate metrics overview table.
 """
 
+import argparse
 from collections import defaultdict
 import os
 import json
@@ -10,7 +11,11 @@ import glob
 
 import pandas
 
-benchmark_artifact_folder = "data/benchmark/"
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--folder", default="data/benchmark/")
+args = parser.parse_args()
+benchmark_artifact_folder = args.folder
 
 # Load all benchmark result jsonl files
 benchmark_jsonl_list = glob.glob("*.jsonl", root_dir=benchmark_artifact_folder)
@@ -50,12 +55,11 @@ for raw_benchmark in raw_benchmarks:
     world_size = device_info["world_size"]
     device_description = "{} x{}".format(device_name, world_size)
 
-    if world_size > 1:
-        print(source_filename)
-
     train_step = example_output.get("train_step")
     if train_step is not None:
-        train_throughput = train_step["num_tokens"] / train_step["time_elapsed"]
+        train_throughput = (
+            world_size * train_step["num_tokens"] / train_step["time_elapsed"]
+        )
     else:
         train_throughput = None
 
@@ -65,5 +69,9 @@ throughput_table = pandas.DataFrame(aggregated_output).T
 
 print(throughput_table)
 
-with open("data/benchmark/table.md", "w") as table_output_file:
+with open(
+    os.path.join(benchmark_artifact_folder, "table.md"), "w"
+) as table_output_file:
     table_output_file.write(throughput_table.to_markdown())
+
+print(example_output.get("profiler_table"))

@@ -191,6 +191,7 @@ class BenchmarkingDataset(Dataset):
 
 def main(config: Config, model_name: str) -> None:
     """Define the main calling function."""
+    print("Writing metrics to {}".format(output_path))
     write_metrics("model_name", model_name)
     write_metrics("config", {**config.__dict__})
     write_metrics("device_info", get_device_info())

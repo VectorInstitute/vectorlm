@@ -14,9 +14,14 @@ source ~/vectorlm/env/bin/activate
 export PYTHONPATH=$PYTHONPATH:`pwd`
 
 nvidia-smi
+export num_gpus=`nvidia-smi -L | wc -l`
+echo num_gpus: ${num_gpus}
 
 torchrun \
 --nnodes=1 \
---nproc-per-node=${SLURM_STEP_GPUS} profiling/benchmark.py \
+--nproc-per-node=${num_gpus} profiling/benchmark.py \
 --yaml_path profiling/configs/lora-benchmark.yaml \
 --model_name $1
+
+# # clean up benchmarking artifacts as ops have requested
+rm -rf /dev/shm/lora-benchmark

@@ -23,7 +23,7 @@ model_list = [
         "opt-350m",
         "Llama-2-7b-hf",
         "Llama-2-13b-hf",
-        "Mistral-7B-v0.1",
+        "Mixtral-8x7B-Instruct-v0.1",
     ]
 ]
 
@@ -31,12 +31,12 @@ slurm_flags_options = {
     "nodes": [1],
     "mem": [0],
     "ntasks-per-node": [1],
-    "cpus-per-gpu": [6],
+    "cpus-per-gpu": [3],
     "gres": ["gpu:{}".format(n + 1) for n in range(8)],
     "partition": ["t4v2", "a40", "a100"],
 }
 
-slurm_flags_extra = {"time": "00:30:00", "qos": qos_selected}
+slurm_flags_extra = {"time": "00:15:00", "qos": qos_selected}
 
 slurm_pos_args_options = [["profiling/launch_lora_benchmark.sh"], model_list]
 timestamp = int(time.time())
