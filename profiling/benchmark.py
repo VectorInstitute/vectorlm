@@ -183,7 +183,7 @@ class BenchmarkingDataset(Dataset):
                 "labels": torch.zeros(1024),
                 "attention_mask": torch.ones(1024),
             }
-            for row_id in range(1024)
+            for row_id in range(8192)
         ]
         self.eval_ds = self.train_ds
         self.original_length = math.ceil(len(self.train_ds) / self.train_bs)
@@ -236,6 +236,7 @@ def main(config: Config, model_name: str) -> None:
             training_args.low_cpu_mem_usage,
         )
         if lora_peft_config is not None:
+            print("Enabling LoRA Wrapper.")
             model = get_lora_model_from_base_model(model, lora_peft_config)
 
         decoder_layer_module = get_submodule_by_pattern(model, r"DecoderLayer$")
