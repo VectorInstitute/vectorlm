@@ -15,7 +15,12 @@ from vectorlm.dataset import Dataset
 from vectorlm.trainer import Trainer
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.misc_utils import cleanup, setup, wandb_setup
-from vectorlm.utils.model_utils import load_model_and_tokenizer, shard_model
+from vectorlm.utils.model_utils import (
+    get_lora_model_from_base_model,
+    get_submodule_by_pattern,
+    load_model_and_tokenizer,
+    shard_model,
+)
 from vectorlm.utils.optimizer_utils import get_custom_scheduler
 from vectorlm.utils.save_utils import save_consolidated_model
 
@@ -30,7 +35,9 @@ def parse_args() -> Namespace:
     """
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--yaml_path", default="configs/config.yaml", required=False,
+        "--yaml_path",
+        default="configs/config.yaml",
+        required=False,
     )
     return parser.parse_args()
 
@@ -67,9 +74,14 @@ def main(config: Config) -> None:
         training_args.low_cpu_mem_usage,
     )
 
+    lora_peft_config = getattr(config.train_parameters, "lora_peft_config", None)
+    if lora_peft_config is not None:
+        model = get_lora_model_from_base_model(model, lora_peft_config)
+
+    decoder_layer_module = get_submodule_by_pattern(model, r"DecoderLayer$")
     model = shard_model(
         model,
-        LlamaDecoderLayer,
+        decoder_layer_module,
         training_args.use_mp,
         training_args.use_activation_checkpointing,
         training_args.sharding_strategy,
@@ -140,6 +152,7 @@ def main(config: Config) -> None:
             )
         save_consolidated_model(trainer.model, hf_save_dir, rank)
         dataset.reset_dataloaders()
+
 
 if __name__ == "__main__":
     args = parse_args()

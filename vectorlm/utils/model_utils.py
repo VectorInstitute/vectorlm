@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import functools
-from typing import Any, Callable
+import re
+from typing import Any, Callable, Dict, Optional
 
 import torch
 import torch.distributed as dist
-from peft import PeftConfig, PeftModel
+from peft import LoraConfig, PeftConfig, PeftModel, TaskType, get_peft_model
+from peft.utils.other import fsdp_auto_wrap_policy
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
@@ -16,13 +18,64 @@ from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     FullyShardedDataParallel as FSDP,
 )
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     PreTrainedModel,
     PreTrainedTokenizer,
 )
+
+
+def _is_bfloat_available() -> bool:
+    """
+    Return whether bfloat is supported for the
+    current CUDA device.
+
+    Returns:
+    --------
+        bool. True if bfloat is supported.
+    """
+    cuda_capability = torch.cuda.get_device_capability()
+    cuda_capability_str = "{}.{}".format(*cuda_capability)
+    if cuda_capability[0] >= 8.0:
+        print("Hardware capability {}; bfloat is supported".format(cuda_capability_str))
+        return True
+
+    else:
+        print(
+            "Hardware capability {}; bfloat isn't supported".format(cuda_capability_str)
+        )
+        return False
+
+
+def get_lora_model_from_base_model(
+    base_model: nn.Module, peft_config_dict: Dict
+) -> PeftModel:
+    """
+    Initialize lora peft configuration from a non-lora model.
+
+    Args:
+    -----
+        base_model: HuggingFace Transformer model to wrap.
+        peft_config_dict: configuration from yaml config file.
+    """
+    task_type_str = peft_config_dict["task_type"]
+    task_type = getattr(TaskType, task_type_str)
+    lora_config = LoraConfig(**{**peft_config_dict, "task_type": task_type})
+
+    # See github.com/pytorch/pytorch/pull/102212
+    base_model.load_state_dict(base_model.state_dict(), assign=True)
+    lora_model = get_peft_model(base_model, lora_config)
+
+    if _is_bfloat_available():
+        lora_model = lora_model.bfloat16()
+    else:
+        lora_model = lora_model.half()
+
+    assert isinstance(lora_model, PeftModel)
+    lora_model.print_trainable_parameters()
+    return lora_model
 
 
 def load_peft_model_and_tokenizer(
@@ -96,10 +149,12 @@ def load_model_and_tokenizer(
             then scatter them to the other workers.
         use_safetensors: Whether to use HF safe tensors. Note that this format
             loads significantly faster.
+        local_rank: The local rank of the current worker.
 
     Returns:
     -------
         The model and tokenizer.
+
 
     """
     # load model
@@ -142,7 +197,7 @@ def load_model_and_tokenizer(
 
 def fsdp_config(
     use_mp: bool,
-    layer_to_wrap: nn.Module,
+    model: nn.Module,
     strategy: str,
     local_rank: int,
     low_cpu_mem_usage: bool,
@@ -152,7 +207,7 @@ def fsdp_config(
     Args:
     ----
         use_mp: Whether to use mixed-precision.
-        layer_to_wrap: The layer we are wrapping using FSDP.
+        model_to_wrap: The HuggingFace model to wrap using FSDP.
         strategy: The sharding strategy to use.
         local_rank: The local rank of the current worker.
         low_cpu_mem_usage: Whether to only load model weights on main rank, and
@@ -185,13 +240,9 @@ def fsdp_config(
         )
         ret_dict["mixed_precision"] = mp_policy
 
-    auto_wrap_policy = functools.partial(
-        transformer_auto_wrap_policy,
-        transformer_layer_cls={layer_to_wrap},
-    )
     sharding_strategy = getattr(ShardingStrategy, strategy)
 
-    ret_dict["auto_wrap_policy"] = auto_wrap_policy
+    ret_dict["auto_wrap_policy"] = fsdp_auto_wrap_policy(model)
     ret_dict["sharding_strategy"] = sharding_strategy
     ret_dict["device_id"] = torch.cuda.current_device()
     if low_cpu_mem_usage:
@@ -202,7 +253,7 @@ def fsdp_config(
 
 def shard_model(
     model: nn.Module,
-    layer_to_wrap: nn.Module,
+    layer_to_wrap: type[nn.Module],
     use_mp: bool,
     use_activation_checkpointing: bool,
     strategy: str,
@@ -226,9 +277,14 @@ def shard_model(
     -------
         The sharded module with the requested configurations.
 
+
     """
     fsdp_cfg = fsdp_config(
-        use_mp, layer_to_wrap, strategy, local_rank, low_cpu_mem_usage,
+        use_mp,
+        model,
+        strategy,
+        local_rank,
+        low_cpu_mem_usage,
     )
     if dist.get_rank() == 0:
         print(f"FSDP config: {fsdp_cfg}")
@@ -245,7 +301,7 @@ def shard_model(
 
 def hook_activation_checkpointing(
     model: nn.Module,
-    layer: nn.Module,
+    layer: type[nn.Module],
 ) -> None:
     """Set activation checkpointing.
 
@@ -263,5 +319,39 @@ def hook_activation_checkpointing(
     check_fn = lambda submodule: isinstance(submodule, layer)
 
     apply_activation_checkpointing(
-        model, checkpoint_wrapper_fn=non_reentrant_wrapper, check_fn=check_fn,
+        model,
+        checkpoint_wrapper_fn=non_reentrant_wrapper,
+        check_fn=check_fn,
     )
+
+
+def get_submodule_by_pattern(
+    module: nn.Module, pattern: str
+) -> Optional[type[nn.Module]]:
+    """
+    Return the first module.cls that matches pattern,
+    at least partially.
+
+    With reference to get_module_class_from_name from HuggingFace
+    accelerate `FullyShardedDataParallelPlugin`.
+
+    Args:
+    -----
+        module: Layer container
+        pattern: regular expression string.
+
+    Returns:
+    --------
+        Matched layer (nn.Module) or None if not matched.
+    """
+    modules_children = list(module.children())
+    module_name = module.__class__.__name__
+    if re.search(pattern, module_name) is not None:
+        return module.__class__
+    elif len(modules_children) == 0:
+        return
+    else:
+        for child_module in modules_children:
+            module_class = get_submodule_by_pattern(child_module, pattern)
+            if module_class is not None:
+                return module_class

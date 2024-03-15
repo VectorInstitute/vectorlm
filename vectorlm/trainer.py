@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import math
 import os
 from typing import Any
@@ -27,6 +28,15 @@ from vectorlm.utils.save_utils import (
 )
 
 
+@contextmanager
+def timer_placeholder(task_name: str):
+    try:
+        yield  # start code block
+    finally:
+        # run before exiting
+        return
+
+
 class Trainer:
     """Main trainer class.
 
@@ -48,13 +58,16 @@ class Trainer:
         max_steps: An integer maximum number of training steps for this run.
         saving_steps: An integer for how often we save.
 
+
     """
 
-    def __init__(self,
-            config: Config,
-            enable_wandb_logging: bool,
-            original_dataset_length: int,
-        ) -> None:
+    def __init__(
+        self,
+        config: Config,
+        enable_wandb_logging: bool,
+        original_dataset_length: int,
+        timer_handle=timer_placeholder,
+    ) -> None:
         """Initialize the Trainer class.
 
         Args:
@@ -63,6 +76,7 @@ class Trainer:
             enable_wandb_logging: Whether to enable wandb logging.
             original_dataset_length: The length of the original dataset
                 (divided by the batch size).
+            timer_handle: Optional context manager for profiling.
 
         """
         self.config = config
@@ -82,6 +96,7 @@ class Trainer:
         self.num_update_steps_per_epoch = None
         self.max_steps = None
         self.saving_steps = None
+        self.timer_handle = timer_handle
         self._post_process(original_dataset_length)
 
     def _post_process(self, ds_orig_length: int) -> None:
@@ -90,7 +105,8 @@ class Trainer:
             ds_orig_length / dist.get_world_size(),
         )
         self.num_update_steps_per_epoch = max(
-            sharded_ds_orig_len // self.gas, 1,
+            sharded_ds_orig_len // self.gas,
+            1,
         )
         self.max_steps = math.ceil(
             self.config.epochs * self.num_update_steps_per_epoch,
@@ -116,6 +132,7 @@ class Trainer:
             dataset: The `Dataset` class.
             optimizer: The training optimizer.
             lr_scheduler: The LR scheduler.
+
 
         """
         self.model = model
@@ -149,9 +166,16 @@ class Trainer:
         )
         if rank == 0:
             save_metadata(save_dir, meta_dict)
-        save_model(self.model, save_dir, rank)
-        save_optimizer(self.optimizer, self.model, save_dir, rank)
-        save_scheduler(self.lr_scheduler, save_dir, rank)
+
+        with self.timer_handle("trainer_save_model"):
+            save_model(self.model, save_dir, rank)
+
+        with self.timer_handle("trainer_save_optimizer"):
+            save_optimizer(self.optimizer, self.model, save_dir, rank)
+
+        with self.timer_handle("train_save_scheduler"):
+            save_scheduler(self.lr_scheduler, save_dir, rank)
+
         dist.barrier()
 
     def load_checkpoint(self, checkpoint_dir: str) -> int:
@@ -165,6 +189,7 @@ class Trainer:
         Returns:
         -------
             The checkpointed epoch to be used by the outer loop.
+
 
         """
         rank = dist.get_rank()
@@ -189,6 +214,7 @@ class Trainer:
         -------
             The checkpointed epoch. If no checkpoint exists, it returns a
             default value of 0.
+
 
         """
         checkpoint = checkpoint_exists(checkpoint_dir)
@@ -217,22 +243,22 @@ class Trainer:
             train_batch: The training batch.
             epoch: The current training epoch.
 
+
         """
-        if (
-            self.config.checkpointing_enabled
-        ) and (
+        if (self.config.checkpointing_enabled) and (
             (self.tr_step + 1) % self.saving_steps == 0
         ):
-                self.save_checkpoint(epoch)
+            self.save_checkpoint(epoch)
 
-        train_loss = self.train_step(train_batch, epoch)
+        num_tokens = len(train_batch["input_ids"].flatten())
+        with self.timer_handle("train_step", {"num_tokens": num_tokens}):
+            train_loss = self.train_step(train_batch, epoch)
 
         test_loss = None
         if self.tr_step % self.logging_steps == 0:
             test_loss = self.eval_step(epoch)
         self.tr_step += 1
         return train_loss, test_loss
-
 
     def train_step(self, batch: dict[str, torch.Tensor], epoch: int) -> float:
         """Step training once.
@@ -242,26 +268,42 @@ class Trainer:
             batch: The training batch.
             epoch: The current training epoch.
 
+
         """
         ids = batch.pop("id").to(torch.cuda.current_device())
         batch["input_ids"] = batch["input_ids"].type(torch.LongTensor)
         batch["labels"] = batch["labels"].type(torch.LongTensor)
+        batch = {k: v.to(torch.cuda.current_device()) for k, v in batch.items()}
         self.dataset.update_processed_ids(ids)
 
         if (self.tr_step + 1) % self.gas != self.gas - 1:
-            # no need to sync while accumulating gradients
-            with self.model.no_sync():
+            if hasattr(self.model, "no_sync"):
+                # fsdp: no need to sync while accumulating gradients
+                with self.model.no_sync():
+                    out = self.model(**batch)
+                    tr_step_loss = out.loss
+                    (tr_step_loss / self.gas).backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.config.max_grad_norm
+                    )
+            else:
+                # non-fsdp
                 out = self.model(**batch)
                 tr_step_loss = out.loss
                 (tr_step_loss / self.gas).backward()
-                self.model.clip_grad_norm_(self.config.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.config.max_grad_norm
+                )
+
         else:
             # next forward / backward pass will be synced
             dist.barrier()
             out = self.model(**batch)
             tr_step_loss = out.loss
             (tr_step_loss / self.gas).backward()
-            self.model.clip_grad_norm_(self.config.max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(), self.config.max_grad_norm
+            )
             self.optimizer.step()
             if isinstance(self.lr_scheduler, ReduceLROnPlateau):
                 self.lr_scheduler.step(self.metric)
@@ -283,6 +325,7 @@ class Trainer:
         ----
             epoch: The current training epoch.
 
+
         """
         print_main("Evaluating")
         self.model.eval()
@@ -291,9 +334,14 @@ class Trainer:
             with torch.no_grad():
                 batch.pop("id")
                 batch["input_ids"] = batch["input_ids"].type(torch.LongTensor)
+                num_tokens = len(batch["input_ids"].flatten())
                 batch["labels"] = batch["labels"].type(torch.LongTensor)
-                out = self.model(**batch)
-                eval_loss += out.loss
+                batch = {k: v.to(torch.cuda.current_device()) for k, v in batch.items()}
+
+                with self.timer_handle("eval_step", {"num_tokens": num_tokens}):
+                    out = self.model(**batch)
+                    eval_loss += out.loss
+
         gathered_eval_loss = _gather(eval_loss.reshape(1)).mean().item()
         mean_eval_loss = gathered_eval_loss / len(self.dataset.eval_dataloader)
 
@@ -314,6 +362,7 @@ class Trainer:
             loss: The loss being logged.
             epoch: The current training epoch.
             mode: One of `train` or `eval`.
+
 
         """
         if mode not in {"train", "eval"}:
@@ -352,9 +401,7 @@ class Trainer:
 
 
 def _gather(x: torch.Tensor) -> torch.Tensor:
-    output_tensors = [
-        x.clone() for _ in range(dist.get_world_size())
-    ]
+    output_tensors = [x.clone() for _ in range(dist.get_world_size())]
     dist.all_gather(output_tensors, x)
     return torch.cat(output_tensors, dim=0)
 

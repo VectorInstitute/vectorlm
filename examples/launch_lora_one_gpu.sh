@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=llama7b-2
+#SBATCH --job-name=llama7b-2-lora
 #SBATCH --nodes=1
 #SBATCH --mem=0
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-gpu=6
-#SBATCH --gres=gpu:4
-#SBATCH --output=llama-2-7b.%j.out
-#SBATCH --error=llama-2-7b.%j.err
+#SBATCH --gres=gpu:1
+#SBATCH --output=llama-2-7b-lora.%j.out
+#SBATCH --error=llama-2-7b-lora.%j.err
 #SBATCH --partition=a100
 #SBATCH --qos=your_assigned_qos  # CHANGE
 #SBATCH --open-mode=append
@@ -23,4 +23,4 @@ export LOGLEVEL=INFO
 export PYTHONFAULTHANDLER=1
 # export CUDA_LAUNCH_BLOCKING=0
 
-torchrun --nnodes=1 --nproc-per-node=${SLURM_STEP_GPUS} llama_example.py --yaml_path ../configs/config.yaml
+torchrun --nnodes=1 --nproc-per-node=1 example_lora.py --yaml_path configs/config-lora.yaml
