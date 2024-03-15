@@ -37,7 +37,7 @@ slurm_flags_options = {
     "partition": ["t4v2", "a40", "a100"],
 }
 
-slurm_flags_extra = {"time": "00:15:00", "qos": qos_selected}
+slurm_flags_extra = {"time": "00:30:00", "qos": qos_selected}
 
 slurm_pos_args_options = [["profiling/launch_lora_benchmark.sh"], model_list]
 timestamp = int(time.time())

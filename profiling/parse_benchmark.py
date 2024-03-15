@@ -81,9 +81,14 @@ with open(
 ) as table_output_file:
     table_output_lines.append(throughput_table.to_markdown())
 
-    for model_name, profiler_table_dict in profiler_tables.items():
+    model_names = sorted(list(profiler_tables.keys()))
+    for model_name in model_names:
         table_output_lines.append("\n## {}".format(model_name))
-        for device_description, profiler_table_str in profiler_table_dict.items():
+        profiler_table_dict = profiler_tables[model_name]
+        device_descriptions = sorted(list(profiler_table_dict.keys()))
+
+        for device_description in device_descriptions:
+            profiler_table_str = profiler_table_dict[device_description]
             table_output_lines.append("### {}".format(device_description))
             table_output_lines.append("```\n{}\n```".format(profiler_table_str))
 
