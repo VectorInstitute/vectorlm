@@ -16,6 +16,7 @@ export PYTHONPATH=$PYTHONPATH:`pwd`
 nvidia-smi
 export num_gpus=`nvidia-smi -L | wc -l`
 echo num_gpus: ${num_gpus}
+echo model: $1
 
 torchrun \
 --nnodes=1 \

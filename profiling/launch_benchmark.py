@@ -6,6 +6,7 @@ import argparse
 import itertools
 import subprocess
 import time
+from os import makedirs
 from typing import List
 
 from tqdm.auto import tqdm
@@ -32,7 +33,7 @@ slurm_flags_options = {
     "mem": [0],
     "ntasks-per-node": [1],
     "cpus-per-gpu": [3],
-    "gres": ["gpu:{}".format(n + 1) for n in range(8)],
+    "gres": ["gpu:{}".format(n) for n in [1, 2, 4, 8]],
     "partition": ["t4v2", "a40", "a100"],
 }
 
@@ -73,5 +74,6 @@ for index, (flag_values, pos_args_option) in enumerate(
 
 input("\nPress ENTER to launch {} job(s)".format(len(args_list)))
 
+makedirs("data/output", exist_ok=True)
 for args in tqdm(args_list, ncols=75):
     subprocess.run(args)
