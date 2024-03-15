@@ -76,9 +76,8 @@ throughput_table.sort_index(axis="index", inplace=True)
 print(throughput_table)
 
 table_output_lines: List[str] = []
-with open(
-    os.path.join(benchmark_artifact_folder, "table.md"), "w"
-) as table_output_file:
+markdown_output_path = os.path.join(benchmark_artifact_folder, "table.md")
+with open(markdown_output_path, "w") as table_output_file:
     table_output_lines.append(throughput_table.to_markdown())
 
     model_names = sorted(list(profiler_tables.keys()))
@@ -93,3 +92,5 @@ with open(
             table_output_lines.append("```\n{}\n```".format(profiler_table_str))
 
     table_output_file.write("\n".join(table_output_lines))
+
+print("\nWriting summary to {}".format(markdown_output_path))

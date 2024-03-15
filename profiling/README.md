@@ -13,9 +13,8 @@ $ python3 launch_benchmark.py
 # to accept and automatically invoke the comands.
 ```
 
-After the SLURM jobs complete, profiler output can be found under `/data/benchmark`.
+After the SLURM jobs complete, profiler output can be found under `data/benchmark`. Invoke the following the to generate a Markdown summary of the results:
 
-
-## TODO
-
-Add script for automatically parsing profiler output files.
+```bash
+$ python3 profiling/parse_benchmark.py --folder data/benchmark
+```
