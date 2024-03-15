@@ -66,15 +66,15 @@ def get_lora_model_from_base_model(
 
     # See github.com/pytorch/pytorch/pull/102212
     base_model.load_state_dict(base_model.state_dict(), assign=True)
-    if _is_bfloat_available():
-        base_model = base_model.bfloat16()
-    else:
-        base_model = base_model.half()
-
-    assert isinstance(base_model, PreTrainedModel)
     lora_model = get_peft_model(base_model, lora_config)
-    lora_model.print_trainable_parameters()
 
+    if _is_bfloat_available():
+        lora_model = lora_model.bfloat16()
+    else:
+        lora_model = lora_model.half()
+
+    assert isinstance(lora_model, PeftModel)
+    lora_model.print_trainable_parameters()
     return lora_model
 
 
