@@ -8,9 +8,29 @@ from collections import defaultdict
 import os
 import json
 import glob
-from typing import List
+from typing import List, Dict, TypeVar
 
 import pandas
+
+V = TypeVar("V", Dict, str, int)
+
+
+def _reduce_metric(new_value: V, previous_value: V) -> V:
+    """
+    Recursively reduce values.
+
+
+    """
+    if isinstance(new_value, (float, int)):
+        return new_value + previous_value
+    elif isinstance(new_value, dict) and isinstance(previous_value, dict):
+        for k in previous_value.keys():
+            if k in new_value.keys():
+                previous_value[k] = _reduce_metric(new_value[k], previous_value[k])
+
+        return previous_value
+    else:
+        return new_value
 
 
 parser = argparse.ArgumentParser()
@@ -37,13 +57,16 @@ profiler_tables = defaultdict(dict)
 for raw_benchmark in raw_benchmarks:
     benchmark_output = {}
 
-    # Need to implement alternative reducing method
-    # string: most recent
-    # number: summation
     for line in raw_benchmark:
         name = line["name"]
         value = line["value"]
-        benchmark_output[name] = value
+        previous_value = benchmark_output.get(name)
+        if previous_value is not None:
+            new_value = _reduce_metric(value, previous_value)
+        else:
+            new_value = value
+
+        benchmark_output[name] = new_value
 
     model_name = benchmark_output.get("model_name")
     if model_name is None:
