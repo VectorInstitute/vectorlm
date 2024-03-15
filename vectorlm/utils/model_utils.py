@@ -27,6 +27,28 @@ from transformers import (
 )
 
 
+def _is_bfloat_available() -> bool:
+    """
+    Return whether bfloat is supported for the
+    current CUDA device.
+
+    Returns:
+    --------
+        bool. True if bfloat is supported.
+    """
+    cuda_capability = torch.cuda.get_device_capability()
+    cuda_capability_str = "{}.{}".format(*cuda_capability)
+    if cuda_capability[0] >= 8.0:
+        print("Hardware capability {}; bfloat is supported".format(cuda_capability_str))
+        return True
+
+    else:
+        print(
+            "Hardware capability {}; bfloat isn't supported".format(cuda_capability_str)
+        )
+        return False
+
+
 def get_lora_model_from_base_model(
     base_model: nn.Module, peft_config_dict: Dict
 ) -> PeftModel:
@@ -42,7 +64,17 @@ def get_lora_model_from_base_model(
     task_type = getattr(TaskType, task_type_str)
     lora_config = LoraConfig(**{**peft_config_dict, "task_type": task_type})
 
+    # See github.com/pytorch/pytorch/pull/102212
+    base_model.load_state_dict(base_model.state_dict(), assign=True)
+    if _is_bfloat_available():
+        base_model = base_model.bfloat16()
+    else:
+        base_model = base_model.half()
+
+    assert isinstance(base_model, PreTrainedModel)
     lora_model = get_peft_model(base_model, lora_config)
+    lora_model.print_trainable_parameters()
+
     return lora_model
 
 
@@ -139,14 +171,12 @@ def load_model_and_tokenizer(
     if not low_cpu_mem_usage or local_rank == 0:
         model = AutoModelForCausalLM.from_pretrained(
             path,
-            low_cpu_mem_usage=True,
             **model_args,
         )
     else:
         with torch.device("meta"):
             model = AutoModelForCausalLM.from_pretrained(
                 path,
-                low_cpu_mem_usage=True,
                 **model_args,
             )
 
