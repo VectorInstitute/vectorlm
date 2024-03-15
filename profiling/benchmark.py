@@ -170,7 +170,9 @@ def handle_profiler_trace(profiler_output: torch.autograd.profiler.profile):
     write_metrics("profiler_table", key_average_event_list.table())
     parsed_output = parse_profiler_output(profiler_output)
     write_metrics("profiler_output", parsed_output)
-    profiler_output.export_chrome_trace(profiler_output_path)
+
+    if bool(os.environ.get("PROFILER_EXPORT_TRACE")):
+        profiler_output.export_chrome_trace(profiler_output_path)
 
 
 class BenchmarkingDataset(Dataset):
@@ -185,7 +187,7 @@ class BenchmarkingDataset(Dataset):
             }
             for row_id in range(8192)
         ]
-        self.eval_ds = self.train_ds
+        self.eval_ds = self.train_ds[: len(self.train_ds) // 10]
         self.original_length = math.ceil(len(self.train_ds) / self.train_bs)
 
 
