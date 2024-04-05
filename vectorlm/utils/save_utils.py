@@ -143,7 +143,7 @@ def save_consolidated_model(
             torch.save(state_dict, save_path)
 
 
-def save_model_optimizer(
+def save_model_and_optimizer(
     optimizer: Optimizer,
     model: nn.Module,
     output_dir: str,
@@ -183,7 +183,7 @@ def save_model_optimizer(
             print(f"States saved to {output_dir}")
 
 
-def load_model_optimizer(
+def load_model_and_optimizer(
     optimizer: Optimizer,
     model: nn.Module,
     input_dir: str,
@@ -237,6 +237,7 @@ def save_scheduler(
 
     """
     if rank == 0:
+        os.makedirs(output_dir, exist_ok=True)
         sched_name = "scheduler.bin"
         output_scheduler_file = os.path.join(output_dir, sched_name)
         print(f"Saving scheduler state to {output_scheduler_file}")
