@@ -17,12 +17,10 @@ from vectorlm.utils.save_utils import (
     checkpoint_exists,
     get_latest_checkpoint_dir,
     load_metadata,
-    load_model,
-    load_optimizer,
+    load_model_optimizer,
     load_scheduler,
     save_metadata,
-    save_model,
-    save_optimizer,
+    save_model_optimizer,
     save_scheduler,
 )
 
@@ -149,8 +147,8 @@ class Trainer:
         )
         if rank == 0:
             save_metadata(save_dir, meta_dict)
-        save_model(self.model, save_dir, rank)
-        save_optimizer(self.optimizer, self.model, save_dir, rank)
+        save_model_optimizer(self.optimizer, self.model, save_dir, rank)
+        dist.barrier()
         save_scheduler(self.lr_scheduler, save_dir, rank)
         dist.barrier()
 
@@ -172,8 +170,7 @@ class Trainer:
         self.tr_step = step
         self.dataset.set_processed_ids(ids)
         self.dataset.setup_dataloaders()
-        load_model(self.model, checkpoint_dir, rank)
-        load_optimizer(self.optimizer, self.model, checkpoint_dir, rank)
+        load_model_optimizer(self.optimizer, self.model, checkpoint_dir)
         load_scheduler(self.lr_scheduler, checkpoint_dir, rank)
         dist.barrier()
         return epoch
