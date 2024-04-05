@@ -194,6 +194,7 @@ def fsdp_config(
     ret_dict["auto_wrap_policy"] = auto_wrap_policy
     ret_dict["sharding_strategy"] = sharding_strategy
     ret_dict["device_id"] = torch.cuda.current_device()
+    ret_dict["forward_prefetch"] = True
     if low_cpu_mem_usage:
         ret_dict["param_init_fn"] = _module_init_fn if local_rank != 0 else None
         ret_dict["sync_module_states"] = True

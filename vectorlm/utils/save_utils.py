@@ -4,16 +4,28 @@ import os
 import re
 
 import torch
+from torch import distributed as dist
 from torch import nn
+from torch.distributed.checkpoint import (
+    DefaultLoadPlanner,
+    DefaultSavePlanner,
+    FileSystemReader,
+    FileSystemWriter,
+    load,
+    save,
+)
+from torch.distributed.checkpoint.optimizer import (
+    load_sharded_optimizer_state_dict,
+)
 from torch.distributed.fsdp import (
     FullStateDictConfig,  # general model non-sharded, non-flattened params
-    LocalStateDictConfig,  # flattened params, usable only by FSDP
+    ShardingStrategy,
     StateDictType,
 )
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
 )
-from torch.distributed.fsdp.api import LocalOptimStateDictConfig
+from torch.distributed.fsdp.api import ShardedOptimStateDictConfig
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
@@ -108,46 +120,6 @@ def get_latest_checkpoint_dir(folder_path: str) -> str:
     return os.path.join(epoch_folder, checkpoint_folder)
 
 
-def save_model(model: nn.Module, output_dir: str, rank: int) -> None:
-    """Save the sharded model's weights.
-
-    Args:
-    ----
-        model: The sharded model.
-        output_dir: The checkpointing directory.
-        rank: The worker's rank.
-
-    """
-    os.makedirs(output_dir, exist_ok=True)
-    weights_name = f"model_rank{rank}.bin"
-    output_model_file = os.path.join(output_dir, weights_name)
-    with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
-        print(f"Saving model to {output_model_file}")
-        state_dict = model.state_dict()
-        torch.save(state_dict, output_model_file)
-        print(f"Model saved to {output_model_file}")
-
-
-def load_model(model: nn.Module, input_dir: str, rank: int) -> None:
-    """Load the sharded model's weights.
-
-    Args:
-    ----
-        model: The sharded model.
-        input_dir: The checkpointing directory.
-        rank: The worker's rank.
-
-    """
-    weights_name = f"model_rank{rank}.bin"
-    input_model_file = os.path.join(input_dir, weights_name)
-    cfg = LocalStateDictConfig(offload_to_cpu=True)
-    with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT, cfg):
-        print(f"Loading model from {input_model_file}")
-        state_dict = torch.load(input_model_file)
-        model.load_state_dict(state_dict)
-        print(f"Model loaded from {input_model_file}")
-
-
 def save_consolidated_model(
     model: nn.Module,
     save_dir: str,
@@ -171,13 +143,13 @@ def save_consolidated_model(
             torch.save(state_dict, save_path)
 
 
-def save_optimizer(
+def save_model_and_optimizer(
     optimizer: Optimizer,
     model: nn.Module,
     output_dir: str,
     rank: int,
 ) -> None:
-    """Save the optimizer states.
+    """Save model and optimizer states.
 
     Args:
     ----
@@ -187,51 +159,67 @@ def save_optimizer(
         rank: The worker's rank.
 
     """
-    opt_name = f"optimizer_rank{rank}.bin"
-    output_optimizer_file = os.path.join(output_dir, opt_name)
-    opt_cfg = LocalOptimStateDictConfig(offload_to_cpu=True)
+    os.makedirs(output_dir, exist_ok=True)
+    opt_cfg = ShardedOptimStateDictConfig(offload_to_cpu=True)
     with FSDP.state_dict_type(
         model,
-        StateDictType.LOCAL_STATE_DICT,
+        StateDictType.SHARDED_STATE_DICT,
         optim_state_dict_config=opt_cfg,
     ):
-        opt_state = FSDP.optim_state_dict(model, optimizer)
-        print(f"Saving optimizer state to {output_optimizer_file}")
-        torch.save(opt_state, output_optimizer_file)
-        print(f"Optimizer state saved to {output_optimizer_file}")
+        state_dict = model.state_dict()
+        opt_state = FSDP.sharded_optim_state_dict(model, optimizer)
+        full_state = {"model_state": state_dict, "optim_state": opt_state}
+    writer = FileSystemWriter(output_dir, single_file_per_rank=True)
+    if _should_save(rank, model.sharding_strategy):
+        if rank == 0:
+            print(f"Saving states to {output_dir}")
+        save(
+            state_dict=full_state,
+            storage_writer=writer,
+            process_group=model.process_group,
+            planner=DefaultSavePlanner(),
+        )
+        if rank == 0:
+            print(f"States saved to {output_dir}")
 
 
-def load_optimizer(
+def load_model_and_optimizer(
     optimizer: Optimizer,
     model: nn.Module,
     input_dir: str,
-    rank: int,
 ) -> None:
-    """Load the optimizer states.
+    """Load the model and optimizer states.
 
     Args:
     ----
         optimizer: The sharded optimizer.
         model: The sharded model.
         input_dir: The checkpointing directory.
-        rank: The worker's rank.
 
     """
-    opt_name = f"optimizer_rank{rank}.bin"
-    input_optimizer_file = os.path.join(input_dir, opt_name)
-    opt_cfg = LocalOptimStateDictConfig(offload_to_cpu=True)
-    model_cfg = LocalStateDictConfig(offload_to_cpu=True)
-    with FSDP.state_dict_type(
-        model,
-        StateDictType.LOCAL_STATE_DICT,
-        model_cfg,
-        opt_cfg,
-    ):
-        print(f"Loading optimizer state from {input_optimizer_file}")
-        opt_state = torch.load(input_optimizer_file)
-        opt_state = FSDP.optim_state_dict_to_load(opt_state, model, optimizer)
-        optimizer.load_state_dict(opt_state)
-        print(f"Optimizer state loaded from {input_optimizer_file}")
+    if dist.get_rank() == 0:
+        print(f"Loading states from {input_dir}")
+    with FSDP.state_dict_type(model, StateDictType.SHARDED_STATE_DICT):
+        model_state_dict = model.state_dict()
+        checkpoint = {"model_state": model_state_dict}
+        load(
+            state_dict=checkpoint,
+            storage_reader=FileSystemReader(input_dir),
+            planner=DefaultLoadPlanner(),
+        )
+        model.load_state_dict(checkpoint["model_state"])
+
+        optim_state = load_sharded_optimizer_state_dict(
+            model_state_dict=model.state_dict(),
+            optimizer_key="optim_state",
+            storage_reader=FileSystemReader(input_dir),
+        )
+        flattened_osd = FSDP.optim_state_dict_to_load(
+            model, optimizer, optim_state["optim_state"],
+        )
+        optimizer.load_state_dict(flattened_osd)
+    if dist.get_rank() == 0:
+        print(f"States loaded from {input_dir}")
 
 
 def save_scheduler(
@@ -248,12 +236,14 @@ def save_scheduler(
         rank: The worker's rank.
 
     """
-    sched_name = f"scheduler_rank{rank}.bin"
-    output_scheduler_file = os.path.join(output_dir, sched_name)
-    print(f"Saving scheduler state to {output_scheduler_file}")
-    state_dict = scheduler.state_dict()
-    torch.save(state_dict, output_scheduler_file)
-    print(f"Scheduler state saved to {output_scheduler_file}")
+    if rank == 0:
+        os.makedirs(output_dir, exist_ok=True)
+        sched_name = "scheduler.bin"
+        output_scheduler_file = os.path.join(output_dir, sched_name)
+        print(f"Saving scheduler state to {output_scheduler_file}")
+        state_dict = scheduler.state_dict()
+        torch.save(state_dict, output_scheduler_file)
+        print(f"Scheduler state saved to {output_scheduler_file}")
 
 
 def load_scheduler(
@@ -270,9 +260,33 @@ def load_scheduler(
         rank: The worker's rank.
 
     """
-    sched_name = f"scheduler_rank{rank}.bin"
+    sched_name = "scheduler.bin"
     input_scheduler_file = os.path.join(input_dir, sched_name)
-    print(f"Loading scheduler state from {input_scheduler_file}")
+    if rank == 0:
+        print(f"Loading scheduler state from {input_scheduler_file}")
     state_dict = torch.load(input_scheduler_file)
     scheduler.load_state_dict(state_dict)
-    print(f"Scheduler state loaded from {input_scheduler_file}")
+    if rank == 0:
+        print(f"Scheduler state loaded from {input_scheduler_file}")
+
+
+def _should_save(rank: int, strategy: ShardingStrategy) -> bool:
+    """Whether we should save on this rank.
+
+    In HSDP, we only save on one of the shard_group
+    (i.e. non-replicated ranks).
+
+    Args:
+    ----
+        rank: The global rank.
+        strategy: The sharding strategy for FSDP.
+
+    Returns:
+    -------
+        Whether we should save on this rank.
+
+    """
+    if strategy == ShardingStrategy.HYBRID_SHARD:
+        local_rank = int(os.environ["LOCAL_RANK"])
+        return local_rank == rank
+    return True
