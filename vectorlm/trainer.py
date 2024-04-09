@@ -273,7 +273,6 @@ class Trainer:
         ids = batch.pop("id").to(torch.cuda.current_device())
         batch["input_ids"] = batch["input_ids"].type(torch.LongTensor)
         batch["labels"] = batch["labels"].type(torch.LongTensor)
-        batch = {k: v.to(torch.cuda.current_device()) for k, v in batch.items()}
         self.dataset.update_processed_ids(ids)
 
         if (self.tr_step + 1) % self.gas != self.gas - 1:
@@ -336,7 +335,10 @@ class Trainer:
                 batch["input_ids"] = batch["input_ids"].type(torch.LongTensor)
                 num_tokens = len(batch["input_ids"].flatten())
                 batch["labels"] = batch["labels"].type(torch.LongTensor)
-                batch = {k: v.to(torch.cuda.current_device()) for k, v in batch.items()}
+                batch = {
+                    k: v.to(torch.cuda.current_device())
+                    for k, v in batch.items()
+                }
 
                 with self.timer_handle("eval_step", {"num_tokens": num_tokens}):
                     out = self.model(**batch)

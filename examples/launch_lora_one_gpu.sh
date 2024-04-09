@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=llama7b-2-lora
 #SBATCH --nodes=1
-#SBATCH --mem=0
+#SBATCH --mem=32GB
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-gpu=6
 #SBATCH --gres=gpu:1

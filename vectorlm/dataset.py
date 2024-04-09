@@ -74,8 +74,9 @@ class Dataset:
 
     def load_datasets(self) -> None:
         """Load datasets into memory."""
-        dirs_passed = self.config.get("train_ds", "") and \
-            self.config.get("eval_ds", "")
+        dirs_passed = self.config.get("train_ds", "") and self.config.get(
+            "eval_ds", ""
+        )
 
         if not dirs_passed:
             msg = "`train_ds` and `eval_ds` are missing from config."

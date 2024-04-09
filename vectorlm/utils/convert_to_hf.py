@@ -20,6 +20,7 @@ def parse_args() -> Namespace:
     parser.add_argument("--config_path", default="configs/config.yaml")
     return parser.parse_args()
 
+
 def converter(config: Config) -> None:
     """Define main converting function.
 
@@ -42,12 +43,13 @@ def converter(config: Config) -> None:
         config.model,
         True,
         False,
-        2048, # doesn't matter so hard-coded.
+        2048,  # doesn't matter so hard-coded.
     )
     model.load_state_dict(state_dict)
     model.save_pretrained(
         os.path.join(config.train_parameters.output_dir, "hf-model"),
     )
+
 
 if __name__ == "__main__":
     args = parse_args()

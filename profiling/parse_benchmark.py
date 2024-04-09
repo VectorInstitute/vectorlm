@@ -8,21 +8,49 @@ from collections import defaultdict
 import os
 import json
 import glob
-from typing import List, Dict, TypeVar
+from typing import List, Dict, TypeVar, Tuple, List, Union
+import numpy as np
+from dataclasses import dataclass
 
 import pandas
 
-V = TypeVar("V", Dict, str, int)
+Numbers = Union[int, float]
+V = TypeVar("V")
+Aggregator = TypeVar("Aggregator")
+
+@dataclass
+class RunningAverage:
+    running_count: int = 0
+    running_sum: Union[Numbers, np.ndarray] = None
+
+    def add(self, observation):
+        self.running_count += 1
+        if self.running_sum is None:
+            self.running_sum = observation
+        else:
+            self.running_sum += observation
+
+    def get_average(self) -> Union[Numbers, List[Numbers]]:
+        if self.running_count == 0:
+            return None
+            
+        average = self.running_sum / self.running_count
+        if hasattr(average, "tolist"):
+            return average.tolist()
+
+        return average
 
 
-def _reduce_metric(new_value: V, previous_value: V) -> V:
+def _reduce_metric(new_value, previous_value):
     """
     Recursively reduce values.
-
-
     """
     if isinstance(new_value, (float, int)):
-        return new_value + previous_value
+        if not isinstance(previous_value, list):
+            previous_value = [previous_value]
+
+        return [*previous_value, new_value]
+
     elif isinstance(new_value, dict) and isinstance(previous_value, dict):
         for k in previous_value.keys():
             if k in new_value.keys():
@@ -33,6 +61,26 @@ def _reduce_metric(new_value: V, previous_value: V) -> V:
         return new_value
 
 
+def get_quantiles(values: List[Numbers]) -> np.ndarray:
+    """
+    Given a list of numeraical values,
+    return (min, 25%, 50%, 75%, and max).
+
+    Params:
+        values: list of numerical values, must be non-empty.
+
+    Returns:
+        np.ndarray.
+    """
+    output_list = [
+        np.min(values),
+        *[np.percentile(values, q) for q in [0.25, 0.5, 0.75]],
+        np.max(values),
+    ]
+
+    return np.asarray(output_list)
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--folder", default="data/benchmark/")
 args = parser.parse_args()
@@ -40,6 +88,7 @@ benchmark_artifact_folder = args.folder
 
 # Load all benchmark result jsonl files
 benchmark_jsonl_list = glob.glob("*.jsonl", root_dir=benchmark_artifact_folder)
+print(benchmark_jsonl_list)
 raw_benchmarks = []
 for jsonl_filename in benchmark_jsonl_list:
     jsonl_path = os.path.join(benchmark_artifact_folder, jsonl_filename)
@@ -52,7 +101,8 @@ for jsonl_filename in benchmark_jsonl_list:
     raw_benchmarks.append(benchmark_content)
 
 # (model_name, device)
-aggregated_output = defaultdict(dict)
+benchmarked_combinations = set()
+aggregated_output: Dict[Tuple[str, str], RunningAverage] = defaultdict(lambda: RunningAverage())
 profiler_tables = defaultdict(dict)
 for raw_benchmark in raw_benchmarks:
     benchmark_output = {}
@@ -75,25 +125,38 @@ for raw_benchmark in raw_benchmarks:
     model_name = model_name.split("/")[-1]
     source_filename = benchmark_output["_source"]
 
+    peft_method = benchmark_output.get("peft_method")
+    if peft_method is None:
+        continue
+    
     device_info = benchmark_output["device_info"]
     device_name = device_info["device_name"]
     world_size = device_info["world_size"]
-    device_description = "{} x{}".format(device_name, world_size)
+    device_description = "{} x{} {}".format(device_name, world_size, peft_method)
 
     train_step = benchmark_output.get("train_step")
     if train_step is not None:
-        train_throughput = (
-            world_size * train_step["num_tokens"] / train_step["time_elapsed"]
+        num_tokens = np.asarray(train_step["num_tokens"])
+        time_elapsed = np.asarray(train_step["time_elapsed"])
+        train_throughput = get_quantiles(
+            world_size * num_tokens / time_elapsed
         )
-    else:
-        train_throughput = None
+        aggregated_output[(model_name, device_description)].add(train_throughput)
 
-    aggregated_output[model_name][device_description] = train_throughput
+    benchmarked_combinations.add((model_name, device_description))
     profiler_table_str = benchmark_output.get("profiler_table")
     if profiler_table_str is not None:
         profiler_tables[model_name][device_description] = profiler_table_str
 
-throughput_table = pandas.DataFrame(aggregated_output).T
+
+aggregated_output_nested = defaultdict(dict)
+for combination in benchmarked_combinations:
+    model_name, device_description = combination
+    throughput = aggregated_output[combination].get_average()
+    aggregated_output_nested[model_name][device_description] = throughput
+    
+
+throughput_table = pandas.DataFrame(aggregated_output_nested)
 throughput_table.sort_index(axis="columns", inplace=True)
 throughput_table.sort_index(axis="index", inplace=True)
 print(throughput_table)

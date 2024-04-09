@@ -38,7 +38,7 @@ class Config:
         with open(self.yaml_path) as in_path:
             _config = yaml.safe_load(in_path)
 
-        for k,v in _config.items():
+        for k, v in _config.items():
             self.__setattr__(k, v)
         if self.to_box:
             self._to_box()
@@ -107,10 +107,14 @@ class DataCollatorWithPadding:
         """
         batch = {}
         keys = ["input_ids", "labels"]
-        input_ids, labels = tuple([
-            torch.tensor(
-                instance[key][0:self.max_seq_len],
-            ) for instance in instances] for key in keys
+        input_ids, labels = tuple(
+            [
+                torch.tensor(
+                    instance[key][0 : self.max_seq_len],
+                )
+                for instance in instances
+            ]
+            for key in keys
         )
         batch["id"] = torch.tensor(
             [instance["id"] for instance in instances],
@@ -121,10 +125,14 @@ class DataCollatorWithPadding:
             labels = self._reverse_tensor(labels)
 
         input_ids = torch.nn.utils.rnn.pad_sequence(
-            input_ids, batch_first=True, padding_value=self.pad_token_id,
+            input_ids,
+            batch_first=True,
+            padding_value=self.pad_token_id,
         )
         labels = torch.nn.utils.rnn.pad_sequence(
-            labels, batch_first=True, padding_value=self.ignore_index,
+            labels,
+            batch_first=True,
+            padding_value=self.ignore_index,
         )
 
         if self.padding_side == "left":

@@ -49,6 +49,25 @@ def _is_bfloat_available() -> bool:
         return False
 
 
+def get_half_precision_model(model: nn.Module) -> nn.Module:
+    """
+    Cast model to appropriate half-precision format
+    depending on GPU hardware support.
+
+    Args:
+    ----
+    
+        model: nn.Module to cast.
+
+    Returns:
+    -------
+
+        nn.Module
+    """
+    model = model.bfloat16()
+    return model
+
+
 def get_lora_model_from_base_model(
     base_model: nn.Module, peft_config_dict: Dict
 ) -> PeftModel:
@@ -67,15 +86,17 @@ def get_lora_model_from_base_model(
     # See github.com/pytorch/pytorch/pull/102212
     base_model.load_state_dict(base_model.state_dict(), assign=True)
     lora_model = get_peft_model(base_model, lora_config)
-
-    if _is_bfloat_available():
-        lora_model = lora_model.bfloat16()
-    else:
-        lora_model = lora_model.half()
+    lora_model = get_half_precision_model(lora_model)
 
     assert isinstance(lora_model, PeftModel)
     lora_model.print_trainable_parameters()
     return lora_model
+
+
+def _assert_parameter_shapes(model: nn.Module):
+    for name, parameter in model.named_parameters():
+        print(name, parameter.dtype)
+        assert parameter.dtype is torch.float16
 
 
 def load_peft_model_and_tokenizer(

@@ -15,7 +15,6 @@ from torch.optim import AdamW
 from torch.profiler import ProfilerActivity
 from tqdm import tqdm
 from transformers import set_seed
-from peft.utils.other import fsdp_auto_wrap_policy
 
 from vectorlm.dataset import Dataset
 from vectorlm.trainer import Trainer
@@ -27,6 +26,7 @@ from vectorlm.utils.model_utils import (
     shard_model,
     get_submodule_by_pattern,
     get_lora_model_from_base_model,
+    get_half_precision_model,
 )
 from vectorlm.utils.optimizer_utils import get_custom_scheduler
 from vectorlm.utils.save_utils import save_consolidated_model
@@ -239,8 +239,13 @@ def main(config: Config, model_name: str) -> None:
         )
         if lora_peft_config is not None:
             print("Enabling LoRA Wrapper.")
+            write_metrics("peft_method", "lora")
             model = get_lora_model_from_base_model(model, lora_peft_config)
 
+        else:
+            write_metrics("peft_method", "full_rank")
+
+        model = get_half_precision_model(model)
         decoder_layer_module = get_submodule_by_pattern(model, r"DecoderLayer$")
 
     if decoder_layer_module is None:
@@ -332,6 +337,7 @@ def main(config: Config, model_name: str) -> None:
                 batch = next(train_dl_iterator)
                 trainer.step(batch, epoch)
                 profile_handle.step()
+                write_metrics("torch.cuda.utilization", torch.cuda.utilization())
 
             if epoch == training_args.epochs - 1:
                 with track_time("save_final"):

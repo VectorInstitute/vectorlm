@@ -23,4 +23,4 @@ export LOGLEVEL=INFO
 export PYTHONFAULTHANDLER=1
 # export CUDA_LAUNCH_BLOCKING=0
 
-torchrun --nnodes=1 --nproc-per-node=2 example_lora.py --yaml_path configs/config-lora.yaml
+torchrun --nnodes=1 --nproc-per-node=${SLURM_GPUS_ON_NODE} example_lora.py --yaml_path configs/config-lora.yaml

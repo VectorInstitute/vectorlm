@@ -10,7 +10,7 @@ $ python3 launch_benchmark.py
 
 # The launcher script will print a list of
 # SLURM commands it plans to run. Press ENTER
-# to accept and automatically invoke the comands.
+# to accept and automatically invoke the commands.
 ```
 
 After the SLURM jobs complete, profiler output can be found under `data/benchmark`. Invoke the following the to generate a Markdown summary of the results:
