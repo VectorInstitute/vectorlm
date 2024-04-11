@@ -4,8 +4,8 @@ import os
 from typing import Any
 
 import torch.distributed as dist
-import wandb
 
+import wandb
 from vectorlm.utils.data_utils import Config
 
 

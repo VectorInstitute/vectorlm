@@ -1,13 +1,12 @@
-"""
-Create SLURM jobs running the LoRA benchmark. 
-"""
+"""Create SLURM jobs running the LoRA benchmark."""
+
+from __future__ import annotations
 
 import argparse
 import itertools
 import subprocess
 import time
 from os import makedirs
-from typing import List
 
 from tqdm.auto import tqdm
 
@@ -42,38 +41,43 @@ slurm_flags_options = {
     "mem-per-gpu": ["16GB"],
     "ntasks-per-node": [1],
     "cpus-per-gpu": [3],
-    "gres": ["gpu:{}".format(n) for n in [1, 2, 4, 8]],
+    "gres": [f"gpu:{n}" for n in [1, 2, 4, 8]],
     "partition": partitions,
 }
 
 num_repeats = 2
 slurm_flags_extra = {"time": "01:00:00", "qos": qos_selected}
 
-slurm_pos_args_options = [["profiling/launch_benchmark.sh"], config_list, model_list]
+slurm_pos_args_options = [
+    ["profiling/launch_benchmark.sh"],
+    config_list,
+    model_list,
+]
 timestamp = int(time.time())
 
-args_list: List[List[str]] = []
+args_list: list[list[str]] = []
 for index, (flag_values, pos_args_option, _) in enumerate(
     itertools.product(
         itertools.product(*(slurm_flags_options.values())),
         itertools.product(*slurm_pos_args_options),
-        range(num_repeats)
-    )
+        range(num_repeats),
+    ),
 ):
-    args: List[str] = ["sbatch"]
+    args: list[str] = ["sbatch"]
 
+    log_file_path = f"data/output/{timestamp}.{index}.out"
     extra_flags = {
         **slurm_flags_extra,
-        "output": "data/output/{}.{}.out".format(timestamp, index),
-        "error": "data/output/{}.{}.out".format(timestamp, index),
-        "job-name": "bench-{}-{}".format(timestamp, index),
+        "output": log_file_path,
+        "error": log_file_path,
+        "job-name": f"bench-{timestamp}",
     }
 
     keys = list(slurm_flags_options.keys()) + list(extra_flags.keys())
     values = list(flag_values) + list(extra_flags.values())
     for key, value in zip(keys, values):
         if value is not None:
-            arg = ("--{}".format(key), str(value))
+            arg = (f"--{key}", str(value))
             args.extend(arg)
 
     args.extend(pos_args_option)
@@ -83,9 +87,8 @@ for index, (flag_values, pos_args_option, _) in enumerate(
     if (max_num_jobs is not None) and index + 1 >= int(max_num_jobs):
         break
 
-input("\nPress ENTER to launch {} job(s)".format(len(args_list)))
+input(f"\nPress ENTER to launch {len(args_list)} job(s)")
 
 makedirs("data/output", exist_ok=True)
 for args in tqdm(args_list, ncols=75):
-    subprocess.run(args)
-
+    subprocess.run(args, check=False)

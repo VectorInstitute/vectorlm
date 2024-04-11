@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 import math
 import os
-from typing import Any
+from contextlib import _GeneratorContextManager, contextmanager
+from typing import Any, Callable, Generator
 
 import torch
 import torch.distributed as dist
-import wandb
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from transformers import PreTrainedTokenizer
 
+import wandb
 from vectorlm.dataset import Dataset
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.save_utils import (
@@ -29,12 +29,15 @@ from vectorlm.utils.save_utils import (
 
 
 @contextmanager
-def timer_placeholder(task_name: str):
+def _timer_placeholder(
+    _: str,
+    __: dict[str, Any] | None = None,
+) -> Generator[None, None, None]:
     try:
         yield  # start code block
     finally:
         # run before exiting
-        return
+        pass
 
 
 class Trainer:
@@ -66,7 +69,10 @@ class Trainer:
         config: Config,
         enable_wandb_logging: bool,
         original_dataset_length: int,
-        timer_handle=timer_placeholder,
+        timer_handle: Callable[
+            [str, dict[str, Any] | None],
+            _GeneratorContextManager[None],
+        ] = _timer_placeholder,
     ) -> None:
         """Initialize the Trainer class.
 
@@ -283,7 +289,8 @@ class Trainer:
                     tr_step_loss = out.loss
                     (tr_step_loss / self.gas).backward()
                     torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.config.max_grad_norm
+                        self.model.parameters(),
+                        self.config.max_grad_norm,
                     )
             else:
                 # non-fsdp
@@ -291,7 +298,8 @@ class Trainer:
                 tr_step_loss = out.loss
                 (tr_step_loss / self.gas).backward()
                 torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), self.config.max_grad_norm
+                    self.model.parameters(),
+                    self.config.max_grad_norm,
                 )
 
         else:
@@ -301,7 +309,8 @@ class Trainer:
             tr_step_loss = out.loss
             (tr_step_loss / self.gas).backward()
             torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(), self.config.max_grad_norm
+                self.model.parameters(),
+                self.config.max_grad_norm,
             )
             self.optimizer.step()
             if isinstance(self.lr_scheduler, ReduceLROnPlateau):
@@ -335,10 +344,6 @@ class Trainer:
                 batch["input_ids"] = batch["input_ids"].type(torch.LongTensor)
                 num_tokens = len(batch["input_ids"].flatten())
                 batch["labels"] = batch["labels"].type(torch.LongTensor)
-                batch = {
-                    k: v.to(torch.cuda.current_device())
-                    for k, v in batch.items()
-                }
 
                 with self.timer_handle("eval_step", {"num_tokens": num_tokens}):
                     out = self.model(**batch)

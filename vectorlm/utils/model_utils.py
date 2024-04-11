@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import functools
 import re
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable
 
 import torch
 import torch.distributed as dist
-from peft import LoraConfig, PeftConfig, PeftModel, TaskType, get_peft_model
+from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 from peft.utils.other import fsdp_auto_wrap_policy
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
@@ -18,7 +18,6 @@ from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     FullyShardedDataParallel as FSDP,
 )
-
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -27,57 +26,35 @@ from transformers import (
 )
 
 
-def _is_bfloat_available() -> bool:
-    """
-    Return whether bfloat is supported for the
-    current CUDA device.
-
-    Returns:
-    --------
-        bool. True if bfloat is supported.
-    """
-    cuda_capability = torch.cuda.get_device_capability()
-    cuda_capability_str = "{}.{}".format(*cuda_capability)
-    if cuda_capability[0] >= 8.0:
-        print("Hardware capability {}; bfloat is supported".format(cuda_capability_str))
-        return True
-
-    else:
-        print(
-            "Hardware capability {}; bfloat isn't supported".format(cuda_capability_str)
-        )
-        return False
-
-
 def get_half_precision_model(model: nn.Module) -> nn.Module:
-    """
-    Cast model to appropriate half-precision format
-    depending on GPU hardware support.
+    """Cast model to appropriate half-precision format.
 
     Args:
     ----
-    
         model: nn.Module to cast.
 
     Returns:
     -------
-
         nn.Module
+
     """
-    model = model.bfloat16()
-    return model
+    return model.bfloat16()
 
 
 def get_lora_model_from_base_model(
-    base_model: nn.Module, peft_config_dict: Dict
+    base_model: nn.Module, peft_config_dict: dict[str, Any],
 ) -> PeftModel:
-    """
-    Initialize lora peft configuration from a non-lora model.
+    """Initialize lora peft configuration from a non-lora model.
 
     Args:
-    -----
+    ----
         base_model: HuggingFace Transformer model to wrap.
         peft_config_dict: configuration from yaml config file.
+
+    Returns:
+    -------
+        PeftModel
+
     """
     task_type_str = peft_config_dict["task_type"]
     task_type = getattr(TaskType, task_type_str)
@@ -91,61 +68,6 @@ def get_lora_model_from_base_model(
     assert isinstance(lora_model, PeftModel)
     lora_model.print_trainable_parameters()
     return lora_model
-
-
-def _assert_parameter_shapes(model: nn.Module):
-    for name, parameter in model.named_parameters():
-        print(name, parameter.dtype)
-        assert parameter.dtype is torch.float16
-
-
-def load_peft_model_and_tokenizer(
-    path: str,
-    use_mp: bool,
-    use_fa: bool,
-    max_seq_len: int,
-    peft_adapter_path: str,
-    adapter_name: str = "default",
-    is_trainable: bool = False,
-    config: PeftConfig | None = None,
-) -> tuple[PeftModel, PreTrainedTokenizer]:
-    """Load a trained PEFT adapter to the base model and return the PeftModel.
-
-    E.g., a base llama-2-13b-chat-hf w/ adapter named nifty
-    ├── adapters_lora
-        ├── llama-2-13b-chat-hf+nifty
-
-    Args:
-    ----
-        path: The path where the model and tokenizer are stored.
-        use_mp: Whether to use mixed-precision.
-        use_fa: Whether to use Flash Attention 2.
-        max_seq_len: The maximum sequence length.
-        peft_adapter_path: path to the adapter model, e.g.
-            adapters_lora/llama-2-13b-chat-hf+nifty
-        adapter_name: e.g. nifty
-        is_trainable: train or inference mode
-        config: additional configs
-
-    Returns:
-    -------
-        The PEFT model and tokenizer.
-
-    """
-    model, tokenizer = load_model_and_tokenizer(
-        path,
-        use_mp,
-        use_fa,
-        max_seq_len,
-    )
-    peft_model = PeftModel.from_pretrained(
-        model,
-        peft_adapter_path,
-        adapter_name,
-        is_trainable,
-        config,
-    )
-    return peft_model, tokenizer
 
 
 def load_model_and_tokenizer(
@@ -218,7 +140,7 @@ def load_model_and_tokenizer(
 
 def fsdp_config(
     use_mp: bool,
-    model: nn.Module,
+    model_to_wrap: nn.Module,
     strategy: str,
     local_rank: int,
     low_cpu_mem_usage: bool,
@@ -263,7 +185,7 @@ def fsdp_config(
 
     sharding_strategy = getattr(ShardingStrategy, strategy)
 
-    ret_dict["auto_wrap_policy"] = fsdp_auto_wrap_policy(model)
+    ret_dict["auto_wrap_policy"] = fsdp_auto_wrap_policy(model_to_wrap)
     ret_dict["sharding_strategy"] = sharding_strategy
     ret_dict["device_id"] = torch.cuda.current_device()
     if low_cpu_mem_usage:
@@ -347,32 +269,36 @@ def hook_activation_checkpointing(
 
 
 def get_submodule_by_pattern(
-    module: nn.Module, pattern: str
-) -> Optional[type[nn.Module]]:
-    """
-    Return the first module.cls that matches pattern,
-    at least partially.
+    module: nn.Module, pattern: str,
+) -> type[nn.Module] | None:
+    """Return the first module.cls that matches pattern at least partially.
 
     With reference to get_module_class_from_name from HuggingFace
     accelerate `FullyShardedDataParallelPlugin`.
 
     Args:
-    -----
+    ----
         module: Layer container
         pattern: regular expression string.
 
     Returns:
-    --------
-        Matched layer (nn.Module) or None if not matched.
+    -------
+        nn.Module: matched layer (nn.Module),
+        or
+        None: if not matched.
+
     """
     modules_children = list(module.children())
     module_name = module.__class__.__name__
     if re.search(pattern, module_name) is not None:
         return module.__class__
-    elif len(modules_children) == 0:
-        return
-    else:
-        for child_module in modules_children:
-            module_class = get_submodule_by_pattern(child_module, pattern)
-            if module_class is not None:
-                return module_class
+
+    if len(modules_children) == 0:
+        return None
+
+    for child_module in modules_children:
+        module_class = get_submodule_by_pattern(child_module, pattern)
+        if module_class is not None:
+            return module_class
+
+    return None

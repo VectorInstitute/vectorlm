@@ -44,6 +44,9 @@ def converter(config: Config) -> None:
         True,
         False,
         2048,  # doesn't matter so hard-coded.
+        0,
+        False,
+        True,
     )
     model.load_state_dict(state_dict)
     model.save_pretrained(

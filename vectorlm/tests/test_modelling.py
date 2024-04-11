@@ -1,36 +1,34 @@
-"""
-Test model loading, sharding, and forward/backward.
-"""
+"""Test model loading, sharding, and forward/backward."""
 
-from collections import Counter, defaultdict
+from __future__ import annotations
+
 import os
 import re
+from collections import Counter, defaultdict
+from typing import Any, Generator
 
 import pytest
 import torch
 import torch.distributed as dist
 from torch import nn
-from torch.optim import AdamW
-from torch.distributed.fsdp import ShardingStrategy
-from torch.distributed.fsdp.fully_sharded_data_parallel import BackwardPrefetch
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     FullyShardedDataParallel as FSDP,
 )
+from torch.optim import AdamW
 from transformers.models.opt.modeling_opt import OPTDecoderLayer
 
 from vectorlm.utils.model_utils import (
     get_lora_model_from_base_model,
+    get_submodule_by_pattern,
     load_model_and_tokenizer,
     shard_model,
-    get_submodule_by_pattern,
 )
 
 local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
 
 @pytest.fixture()
-def setup_and_teardown_torch_process_group():
-    # Setup
+def _setup_and_teardown_torch_process_group() -> Generator[None, None, None]:
     dist.init_process_group(
         backend="nccl",
         init_method="tcp://localhost:25567",
@@ -45,10 +43,8 @@ def setup_and_teardown_torch_process_group():
 
 
 @pytest.fixture()
-def lora_peft_config():
-    """
-    Example peft config_dict for LoRA.
-    """
+def lora_peft_config() -> dict[str, Any]:
+    """Populate example peft config_dict for LoRA."""
     return {
         "task_type": "CAUSAL_LM",
         "inference_mode": False,
@@ -59,43 +55,74 @@ def lora_peft_config():
 
 
 @pytest.fixture()
-def base_model():
+def base_model() -> torch.nn.Module:
+    """Instantiate example non-sharded non-peft transformer model."""
     model, tokenizer = load_model_and_tokenizer(
-        "/model-weights/opt-350m", True, False, 1024, local_rank, True
+        "/model-weights/opt-350m",
+        True,
+        False,
+        1024,
+        local_rank,
+        True,
     )
     return model
 
 
 @pytest.fixture()
-def lora_model(base_model, lora_peft_config):
-    lora_model = get_lora_model_from_base_model(base_model, lora_peft_config)
-    return lora_model
+def lora_model(
+    base_model: torch.nn.Module,
+    lora_peft_config: dict[str, Any],
+) -> torch.nn.Module:
+    """Obtain LoRA-wrapped base model."""
+    return get_lora_model_from_base_model(base_model, lora_peft_config)
 
 
 @pytest.fixture()
-def base_model_sharded(base_model, setup_and_teardown_torch_process_group):
-    model_sharded = shard_model(
-        base_model, OPTDecoderLayer, True, True, "FULL_SHARD", local_rank, True
+def base_model_sharded(
+    base_model: torch.nn.Module,
+    _setup_and_teardown_torch_process_group,  # noqa: ANN001
+) -> torch.nn.Module:
+    """Obtain FSDP-sharded base model."""
+    return shard_model(
+        base_model,
+        OPTDecoderLayer,
+        True,
+        True,
+        "FULL_SHARD",
+        local_rank,
+        True,
     )
-    return model_sharded
 
 
 @pytest.fixture()
-def lora_model_sharded(lora_model, setup_and_teardown_torch_process_group):
+def lora_model_sharded(
+    lora_model: torch.nn.Module,
+    _setup_and_teardown_torch_process_group,  # noqa: ANN001
+) -> torch.nn.Module:
+    """Obtain FSDP-sharded LoRA model."""
     model_sharded = shard_model(
-        lora_model, OPTDecoderLayer, True, True, "FULL_SHARD", local_rank, True
+        lora_model,
+        OPTDecoderLayer,
+        True,
+        True,
+        "FULL_SHARD",
+        local_rank,
+        True,
     )
     return FSDP(model_sharded, device_id=torch.cuda.current_device())
 
 
 @pytest.fixture()
-def optimizer_lora_sharded(lora_model_sharded):
-    optimizer = AdamW(lora_model_sharded.parameters())
-    return optimizer
+def optimizer_lora_sharded(
+    lora_model_sharded: torch.nn.Module,
+) -> torch.optim.AdamW:
+    """Instantiate optimizer for sharded LoRA model."""
+    return AdamW(lora_model_sharded.parameters())
 
 
 @pytest.fixture()
-def batch():
+def batch() -> dict[str, torch.Tensor]:
+    """Populate example batch for testing."""
     batch = {
         "input_ids": torch.zeros((1, 12)),
         "labels": torch.zeros((1, 12)),
@@ -103,20 +130,16 @@ def batch():
     }
 
     batch = {k: v.type(torch.LongTensor) for k, v in batch.items()}
-    batch = {k: v.to(torch.device(0)) for k, v in batch.items()}
-
-    return batch
+    return {k: v.to(torch.device(0)) for k, v in batch.items()}
 
 
-def test_load_base_model(base_model):
+def test_load_base_model(base_model: torch.nn.Module) -> None:
+    """Ensure no error is encountered when instantiating base model fixture."""
     print(base_model)
 
 
-def test_match_submodule_by_pattern(base_model, lora_model):
-    """
-    Test selecting DecoderLayer class from container.
-    """
-
+def test_match_submodule_by_pattern(base_model: torch.nn.Module) -> None:
+    """Test selecting DecoderLayer class from container."""
     submodule = get_submodule_by_pattern(base_model, r"DecoderLayer$")
     assert submodule == OPTDecoderLayer
 
@@ -124,43 +147,36 @@ def test_match_submodule_by_pattern(base_model, lora_model):
     assert submodule == OPTDecoderLayer
 
 
-def test_partition_base_model(
-    base_model_sharded, setup_and_teardown_torch_process_group
-):
-    """
-    Test partitioning base model (no lora/peft).
-    """
+@pytest.mark.usefixtures("_setup_and_teardown_torch_process_group")
+def test_partition_base_model(base_model_sharded: torch.nn.Module) -> None:
+    """Test partitioning base model (no lora/peft)."""
     output_text = []
     for parameter_name, parameter in base_model_sharded.named_parameters():
         requires_grad = parameter.requires_grad
-        assert requires_grad == True
-        output_text.append("{}\t{}".format(requires_grad, parameter_name))
+        assert requires_grad
+        output_text.append(f"{requires_grad}\t{parameter_name}")
 
     with open("data/output_base.txt", "w") as output_file:
         output_file.write("\n".join(output_text))
 
 
-def test_get_module_types(lora_model_sharded):
-    """
-    Output type of each module.
-    """
+def test_get_module_types(lora_model_sharded: torch.nn.Module) -> None:
+    """Output type of each module."""
     output_text = []
     print(lora_model_sharded)
 
     for module_name, module in lora_model_sharded.named_modules():
-        output_text.append("{}\t{}".format(module_name, type(module)))
+        output_text.append(f"{module_name}\t{type(module)}")
 
     with open("data/module_types.txt", "w") as output_file:
         output_file.write("\n".join(output_text))
 
 
+@pytest.mark.usefixtures("_setup_and_teardown_torch_process_group")
 def test_fsdp_lora_model_require_grad(
-    lora_model_sharded, setup_and_teardown_torch_process_group
-):
-    """
-    Test partitioning lora peft model.
-    """
-
+    lora_model_sharded: torch.nn.Module,
+) -> None:
+    """Test partitioning lora peft model."""
     requires_grad_counters = defaultdict(Counter)
 
     output_text = []
@@ -169,12 +185,12 @@ def test_fsdp_lora_model_require_grad(
         requires_grad = parameter.requires_grad
         requires_grad_counters[requires_grad][parameter_name] += 1
         if re.search("lora_[A|B]", parameter_name) is not None:
-            assert requires_grad == True, parameter_name
+            assert requires_grad, parameter_name
         else:
-            assert requires_grad == False, parameter_name
+            assert not requires_grad, parameter_name
 
         output_text.append(
-            "{}\t{}\t{}".format(requires_grad, parameter.device, parameter_name)
+            f"{requires_grad}\t{parameter.device}\t{parameter_name}",
         )
 
         if reference_device is not None:
@@ -182,16 +198,15 @@ def test_fsdp_lora_model_require_grad(
 
         reference_device = parameter.device
 
-    # # Uncomment line below to see all parameter names.
-    # print(requires_grad_counters)
     with open("data/output.txt", "w") as output_file:
         output_file.write("\n".join(output_text))
 
 
-def test_forward_base(base_model_sharded, batch):
-    """
-    Test forward run of sharded base model.
-    """
+def test_forward_base(
+    base_model_sharded: torch.nn.Module,
+    batch: dict[str, torch.Tensor],
+) -> None:
+    """Test forward run of sharded base model."""
     base_model_sharded.train()
     output = base_model_sharded(**batch)
     loss = output.loss
@@ -201,10 +216,11 @@ def test_forward_base(base_model_sharded, batch):
     print(loss.shape)
 
 
-def test_forward_lora(lora_model_sharded, batch):
-    """
-    Test forward run of sharded lora model.
-    """
+def test_forward_lora(
+    lora_model_sharded: torch.nn.Module,
+    batch: dict[str, torch.Tensor],
+) -> None:
+    """Test forward run of sharded lora model."""
     lora_model_sharded.train()
     output = lora_model_sharded(**batch)
     loss = output.loss
@@ -213,10 +229,11 @@ def test_forward_lora(lora_model_sharded, batch):
     print(loss.shape)
 
 
-def test_forward_backward_lora(lora_model_sharded, batch):
-    """
-    Test forward and backward run of sharded lora model.
-    """
+def test_forward_backward_lora(
+    lora_model_sharded: torch.nn.Module,
+    batch: dict[str, torch.Tensor],
+) -> None:
+    """Test forward and backward run of sharded lora model."""
     lora_model_sharded.train()
     output = lora_model_sharded(**batch)
     loss = output.loss
@@ -228,10 +245,12 @@ def test_forward_backward_lora(lora_model_sharded, batch):
     print(loss.shape)
 
 
-def test_train_lora(lora_model_sharded, optimizer_lora_sharded, batch):
-    """
-    Test N optimization steps on the LoRA sharded model.
-    """
+def test_train_lora(
+    lora_model_sharded: torch.nn.Module,
+    optimizer_lora_sharded: torch.nn.Module,
+    batch: dict[str, torch.Tensor],
+) -> None:
+    """Test N optimization steps on the LoRA sharded model."""
     optimizer = optimizer_lora_sharded
     model = lora_model_sharded
     loss_values = []

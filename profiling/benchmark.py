@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # Renamed from examples/llama_example.py
 import argparse
 import contextlib
@@ -7,29 +9,36 @@ import os
 import sys
 import time
 from argparse import Namespace
-from typing import Any, Dict, Optional
+from typing import Any, Generator
 
 import torch
 import torch.distributed as dist
 from torch.optim import AdamW
 from torch.profiler import ProfilerActivity
 from tqdm import tqdm
-from transformers import set_seed
+from transformers import PreTrainedTokenizer, set_seed
 
 from vectorlm.dataset import Dataset
 from vectorlm.trainer import Trainer
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.misc_utils import cleanup, setup, wandb_setup
 from vectorlm.utils.model_utils import (
+    get_half_precision_model,
+    get_lora_model_from_base_model,
+    get_submodule_by_pattern,
     hook_activation_checkpointing,
     load_model_and_tokenizer,
     shard_model,
-    get_submodule_by_pattern,
-    get_lora_model_from_base_model,
-    get_half_precision_model,
 )
 from vectorlm.utils.optimizer_utils import get_custom_scheduler
 from vectorlm.utils.save_utils import save_consolidated_model
+
+JSONSerializable = str | dict[str, Any] | list[str] | float | None
+_MIN_FLASH_ATTENTION_CUDA_CAPABILITY = 8
+
+# Cap value ot tokenizer.model_max_length to this value,
+# unless overridden when instantiating the benchmarking dataset.
+_MAX_SEQ_LENGTH = 65536
 
 
 def parse_args() -> Namespace:
@@ -38,6 +47,7 @@ def parse_args() -> Namespace:
     Returns
     -------
         The parsed arguments.
+
     """
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -49,6 +59,14 @@ def parse_args() -> Namespace:
         "--model_name",
         required=True,
     )
+    parser.add_argument(
+        "--num_train_examples",
+        default=10000,
+    )
+    parser.add_argument(
+        "--num_eval_examples",
+        default=1000,
+    )
     return parser.parse_args()
 
 
@@ -56,14 +74,17 @@ def parse_args() -> Namespace:
 launch_time = time.time()
 os.makedirs("data/benchmark", exist_ok=True)
 os.makedirs("data/trace", exist_ok=True)
-output_path = "data/benchmark/{}.jsonl".format(launch_time)
-profiler_output_path = "data/trace/{}.json".format(launch_time)
+output_path = f"data/benchmark/{launch_time}.jsonl"
+profiler_output_path = f"data/trace/{launch_time}.json"
 
 
-def write_metrics(metric_name: str, value: Optional[Any] = None) -> None:
-    """
-    Write metric and time elapsed to output file.
-    Write to disk only if process rank is 0.
+def write_metrics(
+    metric_name: str,
+    value: JSONSerializable = None,
+) -> None:
+    """Write metric and time elapsed to output file.
+
+    This function writes to disk only if process rank is 0.
 
     Params:
         metric_name: string indicating type of metric
@@ -84,61 +105,74 @@ def write_metrics(metric_name: str, value: Optional[Any] = None) -> None:
 
 
 @contextlib.contextmanager
-def track_time(task_name: str, extra_info: Dict[str, Any] = {}):
+def track_time(
+    task_name: str,
+    extra_info: dict[str, Any] | None = None,
+) -> Generator[None, None, None]:
+    """Context manager for recording time spent in a code block.
+
+    Params
+    ------
+        task_name: str
+        extra_info: Optional, JSON-serializable dictionary
+            to include in log output.
+
+    """
     start_time = time.time()
     try:
         yield
     finally:
         time_elapsed = time.time() - start_time
-        write_metrics(task_name, {"time_elapsed": time_elapsed, **extra_info})
+        metric_value = {"time_elapsed": time_elapsed}
+        if extra_info is not None:
+            metric_value = {**metric_value, **extra_info}
+
+        write_metrics(task_name, metric_value)
 
 
-def get_device_info() -> Dict[str, str | int]:
-    """
-    Get CUDA info as a dict.
+def get_device_info() -> dict[str, str | int]:
+    """Get CUDA info as a dict.
 
-    Returns:
+    Returns
+    -------
         Dict including device_name and world size
+
     """
-    return dict(
-        device_name=torch.cuda.get_device_name(),
-        local_rank=int(os.environ["LOCAL_RANK"]),
-        rank=int(os.environ["RANK"]),
-        world_size=int(os.environ["WORLD_SIZE"]),
-    )
+    return {
+        "device_name": torch.cuda.get_device_name(),
+        "local_rank": int(os.environ["LOCAL_RANK"]),
+        "rank": int(os.environ["RANK"]),
+        "world_size": int(os.environ["WORLD_SIZE"]),
+    }
 
 
 def get_is_flash_attention_supported() -> bool:
-    """
-    Returns:
-        Whether Flash Attention is supported based on
-        the given CUDA device capability.
-    """
+    """Determine whether flash attention is available."""
     version_major, _ = torch.cuda.get_device_capability()
-    return version_major >= 8
+    return version_major >= _MIN_FLASH_ATTENTION_CUDA_CAPABILITY
 
 
-def get_slurm_env() -> Dict[str, str]:
-    """
-    Returns a dictionary of all env var starting with "SLURM_".
-    """
-    output = {
-        key: value for key, value in os.environ.items() if key.startswith("SLURM_")
+def get_slurm_env() -> dict[str, str]:
+    """Return a dictionary of all env var starting with "SLURM_"."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key.startswith("SLURM_")
     }
-    return output
 
 
 def parse_profiler_output(
     profiler_output: torch.autograd.profiler.profile,
-) -> Dict[str, Dict[str, str | float | int]]:
-    """
-    Parse profiler_output to obtain dictionary of metrics.
+) -> dict[str, dict[str, str | float | int]]:
+    """Parse profiler_output to obtain dictionary of metrics.
 
-    Returns:
+    Returns
+    -------
         Dictionary mapping event name to dictionary of metrics.
+
     """
     key_average_event_list = profiler_output.key_averages()
-    output: Dict[str, Dict[str, str | float | int]] = {}
+    output: dict[str, dict[str, str | float | int]] = {}
     for evt in key_average_event_list:
         trace_name = getattr(evt, "trace_name", None)
         if trace_name is None:
@@ -156,14 +190,17 @@ def parse_profiler_output(
     return output
 
 
-def handle_profiler_trace(profiler_output: torch.autograd.profiler.profile):
-    """
-    Log torch profile to disk.
+def _handle_profiler_trace(
+    profiler_output: torch.autograd.profiler.profile,
+) -> None:
+    """Log torch profile to disk.
+
     This function is to be invoked as a callback for on_track_ready.
 
     Args:
-    -----
-        profile: from Torch profiler.
+    ----
+        profiler_output: from Torch profiler.
+
     """
     print(profiler_output)
     key_average_event_list = profiler_output.key_averages()
@@ -176,31 +213,75 @@ def handle_profiler_trace(profiler_output: torch.autograd.profiler.profile):
 
 
 class BenchmarkingDataset(Dataset):
+    """In-memory dataset for benchmarking."""
+
+    def __init__(
+        self,
+        config: Config,
+        num_train_examples: int,
+        num_eval_examples: int,
+        tokenizer: PreTrainedTokenizer,
+        max_length: int | None = None,
+    ) -> None:
+        """Initialize in-memory dataset for benchmarking.
+
+        Refer to vectorlm.dataset for details regarding config
+        and tokenizer.
+
+        Params:
+        ------
+            config: dataset config. Forwarded to vectorlm.dataset.Dataset.
+            num_train_examples: length of train split.
+            num_eval_examples: length of eval split.
+            tokenizer: HuggingFace tokenizer.
+            max_length: optional. If not specified,
+                fall back to tokenizer.model_max_length.
+        """
+        self.num_train_examples = num_train_examples
+        self.num_eval_examples = num_eval_examples
+
+        if max_length is not None:
+            self.max_length = max_length
+        else:
+            self.max_length = min(tokenizer.model_max_length, _MAX_SEQ_LENGTH)
+
+        super().__init__(config, tokenizer)
+
     def load_datasets(self) -> None:
         """Load datasets into memory."""
-        self.train_ds = [
-            {
-                "id": row_id,
-                "input_ids": torch.zeros(1024),
-                "labels": torch.zeros(1024),
-                "attention_mask": torch.ones(1024),
-            }
-            for row_id in range(8192)
-        ]
-        self.eval_ds = self.train_ds[: len(self.train_ds) // 10]
+        self.train_ds, self.eval_ds = (
+            [
+                {
+                    "id": row_id,
+                    "input_ids": torch.zeros(self.max_length),
+                    "labels": torch.zeros(self.max_length),
+                    "attention_mask": torch.ones(self.max_length),
+                }
+                for row_id in range(length)
+            ]
+            for length in (self.num_train_examples, self.num_eval_examples)
+        )
+
         self.original_length = math.ceil(len(self.train_ds) / self.train_bs)
 
 
-def main(config: Config, model_name: str) -> None:
-    """Define the main calling function."""
-    print("Writing metrics to {}".format(output_path))
-    write_metrics("model_name", model_name)
+if __name__ == "__main__":
+    args = parse_args()
+    config = Config(yaml_path=args.yaml_path)
+    setup(config.train_parameters.output_dir)
+
+    print(f"Writing metrics to {output_path}")
+    write_metrics("model_name", args.model_name)
     write_metrics("config", {**config.__dict__})
     write_metrics("device_info", get_device_info())
     write_metrics("slurm_info", get_slurm_env())
 
     profiler_schedule = torch.profiler.schedule(
-        skip_first=10, wait=5, warmup=1, active=3, repeat=2
+        skip_first=10,
+        wait=5,
+        warmup=1,
+        active=3,
+        repeat=2,
     )
 
     training_args = config.train_parameters
@@ -225,12 +306,15 @@ def main(config: Config, model_name: str) -> None:
     dist.barrier()
 
     # load model and tokenizer
-    state_dict_path = getattr(config, "state_dict", None)
-    lora_peft_config = getattr(config.train_parameters, "lora_peft_config", None)
+    lora_peft_config = getattr(
+        config.train_parameters,
+        "lora_peft_config",
+        None,
+    )
 
     with track_time("model_load"):
         model, tokenizer = load_model_and_tokenizer(
-            model_name,
+            args.model_name,
             training_args.use_mp,
             get_is_flash_attention_supported(),
             training_args.max_seq_len,
@@ -249,8 +333,8 @@ def main(config: Config, model_name: str) -> None:
         decoder_layer_module = get_submodule_by_pattern(model, r"DecoderLayer$")
 
     if decoder_layer_module is None:
-        track_time("decoder_layer_module_is_none")
-        raise ValueError("decoder_layer_module is None.")
+        msg = "decoder_layer_module is None."
+        raise ValueError(msg)
 
     with track_time("model_shard"):
         model = shard_model(
@@ -262,14 +346,6 @@ def main(config: Config, model_name: str) -> None:
             local_rank,
             training_args.low_cpu_mem_usage,
         )
-        per_device_parameter_count = sum(p.numel() for p in model.parameters())
-        track_time(
-            "parameter_count",
-            {
-                "per_device": per_device_parameter_count,
-                "total": per_device_parameter_count * world_size,
-            },
-        )
 
     with track_time("set_activation_checkpointing"):
         if training_args.use_activation_checkpointing:
@@ -279,6 +355,8 @@ def main(config: Config, model_name: str) -> None:
     with track_time("dataset_load"):
         dataset = BenchmarkingDataset(
             config=config.dataset,
+            num_train_examples=args.num_train_examples,
+            num_eval_examples=args.num_eval_examples,
             tokenizer=tokenizer,
         )
 
@@ -315,7 +393,6 @@ def main(config: Config, model_name: str) -> None:
         lr_scheduler,
     )
 
-    # TODO: support restoring LoRA fine-tuning
     trainer.dataset.setup_dataloaders()
     checkpointed_epoch = 0
 
@@ -323,25 +400,30 @@ def main(config: Config, model_name: str) -> None:
     with torch.profiler.profile(
         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
         schedule=profiler_schedule,
-        on_trace_ready=handle_profiler_trace,
+        on_trace_ready=_handle_profiler_trace,
     ) as profile_handle:
         for epoch in range(checkpointed_epoch, training_args.epochs):
             trainer.model.train()
             train_dl_iterator = iter(dataset.train_dataloader)
             for _ in tqdm(
-                # range(len(dataset.train_dataloader)),
-                range(7 * 13),
+                range(args.num_train_examples),
                 disable=rank != 0,
                 file=sys.__stdout__,
             ):
                 batch = next(train_dl_iterator)
                 trainer.step(batch, epoch)
                 profile_handle.step()
-                write_metrics("torch.cuda.utilization", torch.cuda.utilization())
+                write_metrics(
+                    "torch.cuda.utilization",
+                    torch.cuda.utilization(),
+                )
 
             if epoch == training_args.epochs - 1:
                 with track_time("save_final"):
-                    hf_save_dir = os.path.join(training_args.output_dir, "final-model")
+                    hf_save_dir = os.path.join(
+                        training_args.output_dir,
+                        "final-model",
+                    )
             else:
                 with track_time("save_checkpoint"):
                     hf_save_dir = os.path.join(
@@ -357,10 +439,4 @@ def main(config: Config, model_name: str) -> None:
 
             dataset.reset_dataloaders()
 
-
-if __name__ == "__main__":
-    args = parse_args()
-    config = Config(yaml_path=args.yaml_path)
-    setup(config.train_parameters.output_dir)
-    main(config, args.model_name)
     cleanup()

@@ -75,7 +75,7 @@ def load_metadata(
 
 
 def get_latest_checkpoint_dir(folder_path: str) -> str:
-    """Find the latest checkpoing directory using regex.
+    """Find the latest checkpoint directory using regex.
 
     Args:
     ----

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import math
 import os
@@ -9,7 +11,6 @@ import torch.distributed as dist
 from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import set_seed
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
 from vectorlm.dataset import Dataset
 from vectorlm.trainer import Trainer
@@ -74,13 +75,15 @@ def main(config: Config) -> None:
         training_args.low_cpu_mem_usage,
     )
 
-    lora_peft_config = getattr(config.train_parameters, "lora_peft_config", None)
+    lora_peft_config = getattr(
+        config.train_parameters, "lora_peft_config", None,
+    )
     if lora_peft_config is not None:
         model = get_lora_model_from_base_model(model, lora_peft_config)
 
     decoder_layer_module = get_submodule_by_pattern(model, r"DecoderLayer$")
     model = shard_model(
-        model,
+        model.bfloat16(),
         decoder_layer_module,
         training_args.use_mp,
         training_args.use_activation_checkpointing,

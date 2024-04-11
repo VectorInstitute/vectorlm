@@ -75,7 +75,7 @@ class Dataset:
     def load_datasets(self) -> None:
         """Load datasets into memory."""
         dirs_passed = self.config.get("train_ds", "") and self.config.get(
-            "eval_ds", ""
+            "eval_ds", "",
         )
 
         if not dirs_passed:
