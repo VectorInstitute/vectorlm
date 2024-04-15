@@ -23,7 +23,11 @@ from vectorlm.utils.model_utils import (
     shard_model,
 )
 from vectorlm.utils.optimizer_utils import get_custom_scheduler
-from vectorlm.utils.save_utils import checkpoint_exists, save_consolidated_model
+from vectorlm.utils.save_utils import (
+    checkpoint_exists,
+    get_latest_checkpoint_dir,
+    save_consolidated_model,
+)
 
 
 def parse_args() -> Namespace:
@@ -86,7 +90,13 @@ def main(config: Config) -> None:
 
         # Restore peft adapter from filesystem if available.
         if checkpoint_exists(training_args.output_dir):
-            peft_adapter_path = training_args.output_dir
+            peft_adapter_path = os.path.join(
+                training_args.output_dir,
+                "checkpoints",
+                get_latest_checkpoint_dir(
+                    os.path.join(training_args.output_dir, "checkpoints"),
+                ),
+            )
             is_peft_adapter_restored = True
 
         model = get_lora_model_from_base_model(

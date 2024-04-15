@@ -192,7 +192,7 @@ class Trainer:
             # all weights, which would incur significant overhead.
             print(f"type(self.model): {type(self.model)}")
             if self.peft_method is peft.utils.peft_types.PeftType.LORA:
-                save_peft_adapter(self.model, self.config.output_dir)
+                save_peft_adapter(self.model, save_dir)
             else:
                 save_model(self.model, save_dir, rank)
 
