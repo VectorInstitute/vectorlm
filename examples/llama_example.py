@@ -23,7 +23,7 @@ from vectorlm.utils.model_utils import (
     shard_model,
 )
 from vectorlm.utils.optimizer_utils import get_custom_scheduler
-from vectorlm.utils.save_utils import save_consolidated_model
+from vectorlm.utils.save_utils import checkpoint_exists, save_consolidated_model
 
 
 def parse_args() -> Namespace:
@@ -76,12 +76,27 @@ def main(config: Config) -> None:
     )
 
     lora_peft_config = getattr(
-        config.train_parameters, "lora_peft_config", None,
+        config.train_parameters,
+        "lora_peft_config",
+        None,
     )
     if lora_peft_config is not None:
-        model = get_lora_model_from_base_model(model, lora_peft_config)
+        is_peft_adapter_restored = False
+        peft_adapter_path = None
+
+        # Restore peft adapter from filesystem if available.
+        if checkpoint_exists(training_args.output_dir):
+            peft_adapter_path = training_args.output_dir
+            is_peft_adapter_restored = True
+
+        model = get_lora_model_from_base_model(
+            model,
+            lora_peft_config,
+            peft_adapter_path,
+        )
 
     decoder_layer_module = get_submodule_by_pattern(model, r"DecoderLayer$")
+    assert decoder_layer_module is not None, f"No DecoderLayer found in {model}"
     model = shard_model(
         model.bfloat16(),
         decoder_layer_module,
@@ -127,6 +142,7 @@ def main(config: Config) -> None:
         dataset,
         optimizer,
         lr_scheduler,
+        is_peft_adapter_restored,
     )
 
     # Checkpoint check. Always call before training.

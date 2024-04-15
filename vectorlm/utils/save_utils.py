@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 import re
 
+import peft
 import torch
+import torch.distributed as dist
 from torch import nn
 from torch.distributed.fsdp import (
     FullStateDictConfig,  # general model non-sharded, non-flattened params
@@ -171,6 +173,38 @@ def save_consolidated_model(
             torch.save(state_dict, save_path)
 
 
+def get_peft_adapter_tensor_dict(
+    model: peft.peft_model.PeftModel,
+) -> dict[str, torch.Tensor] | None:
+    """Return LoRA PEFT Adapter tensor state dict on rank 0.
+
+    Returns None for all other ranks.
+    """
+    with FSDP.state_dict_type(
+        model,
+        StateDictType.FULL_STATE_DICT,
+        FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
+    ):
+        if dist.get_rank() == 0:
+            return peft.utils.save_and_load.get_peft_model_state_dict(model)
+
+        return None
+
+
+def save_peft_adapter(
+    model: peft.peft_model.PeftModel,
+    output_path: str,
+) -> None:
+    """Save peft adapter to filesystem in a FSDP environment."""
+    with FSDP.state_dict_type(
+        model,
+        StateDictType.FULL_STATE_DICT,
+        FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
+    ):
+        if dist.get_rank() == 0:
+            model.save_pretrained(output_path)
+
+
 def save_optimizer(
     optimizer: Optimizer,
     model: nn.Module,
@@ -229,7 +263,7 @@ def load_optimizer(
     ):
         print(f"Loading optimizer state from {input_optimizer_file}")
         opt_state = torch.load(input_optimizer_file)
-        opt_state = FSDP.optim_state_dict_to_load(opt_state, model, optimizer)
+        opt_state = FSDP.optim_state_dict_to_load(model, optimizer, opt_state)
         optimizer.load_state_dict(opt_state)
         print(f"Optimizer state loaded from {input_optimizer_file}")
 

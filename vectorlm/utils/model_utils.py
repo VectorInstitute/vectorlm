@@ -42,7 +42,9 @@ def get_half_precision_model(model: nn.Module) -> nn.Module:
 
 
 def get_lora_model_from_base_model(
-    base_model: nn.Module, peft_config_dict: dict[str, Any],
+    base_model: PreTrainedModel,
+    peft_config_dict: dict[str, Any],
+    peft_adapter_path: str | None = None,
 ) -> PeftModel:
     """Initialize lora peft configuration from a non-lora model.
 
@@ -50,6 +52,8 @@ def get_lora_model_from_base_model(
     ----
         base_model: HuggingFace Transformer model to wrap.
         peft_config_dict: configuration from yaml config file.
+        peft_adapter_path: optionally, initialize peft adapters
+            using tensors loaded from the filesystem.
 
     Returns:
     -------
@@ -62,9 +66,18 @@ def get_lora_model_from_base_model(
 
     # See github.com/pytorch/pytorch/pull/102212
     base_model.load_state_dict(base_model.state_dict(), assign=True)
-    lora_model = get_peft_model(base_model, lora_config)
-    lora_model = get_half_precision_model(lora_model)
 
+    if peft_adapter_path is not None:
+        lora_model = PeftModel.from_pretrained(
+            base_model,
+            peft_adapter_path,
+            is_trainable=True,
+        )
+        print(f"Restored peft_adapter from {peft_adapter_path}.")
+    else:
+        lora_model = get_peft_model(base_model, lora_config)
+
+    lora_model = get_half_precision_model(lora_model)
     assert isinstance(lora_model, PeftModel)
     lora_model.print_trainable_parameters()
     return lora_model
@@ -269,7 +282,8 @@ def hook_activation_checkpointing(
 
 
 def get_submodule_by_pattern(
-    module: nn.Module, pattern: str,
+    module: nn.Module,
+    pattern: str,
 ) -> type[nn.Module] | None:
     """Return the first module.cls that matches pattern at least partially.
 

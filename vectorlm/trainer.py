@@ -5,6 +5,7 @@ import os
 from contextlib import _GeneratorContextManager, contextmanager
 from typing import Any, Callable, Generator
 
+import peft
 import torch
 import torch.distributed as dist
 from torch.optim import Optimizer
@@ -24,6 +25,7 @@ from vectorlm.utils.save_utils import (
     save_metadata,
     save_model,
     save_optimizer,
+    save_peft_adapter,
     save_scheduler,
 )
 
@@ -63,6 +65,9 @@ class Trainer:
 
 
     """
+
+    peft_method: str | None = None
+    is_peft_adapter_restored: bool = False
 
     def __init__(
         self,
@@ -105,6 +110,9 @@ class Trainer:
         self.timer_handle = timer_handle
         self._post_process(original_dataset_length)
 
+        if hasattr(self.config, "lora_peft_config"):
+            self.peft_method = peft.utils.peft_types.PeftType.LORA
+
     def _post_process(self, ds_orig_length: int) -> None:
         """Calculate steps for weight updates and saving."""
         sharded_ds_orig_len = math.ceil(
@@ -128,6 +136,7 @@ class Trainer:
         dataset: Dataset,
         optimizer: Optimizer,
         lr_scheduler: LRScheduler | ReduceLROnPlateau,
+        is_peft_adapter_restored: bool = False,
     ) -> None:
         """Set all essential training requirements.
 
@@ -139,6 +148,8 @@ class Trainer:
             optimizer: The training optimizer.
             lr_scheduler: The LR scheduler.
 
+            is_peft_adapter_restored: whether peft is enabled and
+                adapters were restored from filesystem.
 
         """
         self.model = model
@@ -146,6 +157,8 @@ class Trainer:
         self.dataset = dataset
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
+
+        self.is_peft_adapter_restored = is_peft_adapter_restored
 
     def save_checkpoint(self, epoch: int) -> None:
         """Save all states.
@@ -173,13 +186,20 @@ class Trainer:
         if rank == 0:
             save_metadata(save_dir, meta_dict)
 
-        with self.timer_handle("trainer_save_model"):
-            save_model(self.model, save_dir, rank)
+        with self.timer_handle("trainer_save_model", {}):
+            # Save adapter only if running LoRA.
+            # Merging adapters into base weights would require gathering
+            # all weights, which would incur significant overhead.
+            print(f"type(self.model): {type(self.model)}")
+            if self.peft_method is peft.utils.peft_types.PeftType.LORA:
+                save_peft_adapter(self.model, self.config.output_dir)
+            else:
+                save_model(self.model, save_dir, rank)
 
-        with self.timer_handle("trainer_save_optimizer"):
+        with self.timer_handle("trainer_save_optimizer", {}):
             save_optimizer(self.optimizer, self.model, save_dir, rank)
 
-        with self.timer_handle("train_save_scheduler"):
+        with self.timer_handle("train_save_scheduler", {}):
             save_scheduler(self.lr_scheduler, save_dir, rank)
 
         dist.barrier()
@@ -203,7 +223,18 @@ class Trainer:
         self.tr_step = step
         self.dataset.set_processed_ids(ids)
         self.dataset.setup_dataloaders()
-        load_model(self.model, checkpoint_dir, rank)
+
+        if self.peft_method is peft.utils.peft_types.PeftType.LORA:
+            # The FSDP wrapper is applied to self.model after the LoRA wrapper.
+            # It is unclear whether peft supports updating the LoRA wrapper
+            # tensors of a FSDP-wrapped module. Hence, the peft adapter
+            # is restored when initializing the LoRA wrapper
+            # before applying the FSDP wrapper, and the is_peft_adapter_restored
+            # ensures that the adapter is indeed applied.
+            assert self.is_peft_adapter_restored
+        else:
+            load_model(self.model, checkpoint_dir, rank)
+
         load_optimizer(self.optimizer, self.model, checkpoint_dir, rank)
         load_scheduler(self.lr_scheduler, checkpoint_dir, rank)
         dist.barrier()
