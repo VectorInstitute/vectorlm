@@ -36,6 +36,7 @@ config_list = [
     "profiling/configs/benchmark.yaml",
 ]
 
+# Set to (-1) to fall back to the max context length of the pre-trained model.
 max_length_list = [1024, 2048, 4096, -1]
 
 slurm_flags_options = {
