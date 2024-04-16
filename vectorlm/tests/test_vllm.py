@@ -17,15 +17,67 @@ Scaffolding and fixtures:
 
 from __future__ import annotations
 
+import os.path
+import shutil
+from typing import Generator
+
 import numpy as np
 import pytest
 import vllm
 import vllm.sequence
+from huggingface_hub import snapshot_download
 from vllm.lora.request import LoRARequest
 
 BASE_MODEL_PATH = "/model-weights/gemma-2b"
-LORA_ADAPTER_PATH = "data/example-adapters/gemma-2b-gsm8k"
+LORA_ADAPTER_HF_HUB_REPO = "jacobthebanana/example-gemma-2b-lora-gsm8k"
+LORA_ADAPTER_LOCAL_FOLDER = "data/example_lora_adapter"
 NUM_TOP_LOGPROBS = 5
+
+
+@pytest.fixture(scope="session")
+def lora_adapter_path() -> str:
+    """Download example LoRA adapters from HuggingFace hub.
+
+    Returns
+    -------
+        Path to the adapters on local filesystem.
+
+    """
+    if not os.path.exists(f"{LORA_ADAPTER_HF_HUB_REPO}"):
+        snapshot_download(
+            LORA_ADAPTER_HF_HUB_REPO,
+            local_dir=LORA_ADAPTER_LOCAL_FOLDER,
+        )
+
+    return LORA_ADAPTER_LOCAL_FOLDER
+
+
+@pytest.fixture(scope="session")
+def lora_adapter_path_dev_shm(
+    lora_adapter_path: str,
+) -> Generator[str, None, None]:
+    """Create a copy of LoRA adapters on /dev/shm.
+
+    Returns
+    -------
+        Path to adapters on the /dev/shm filesystem.
+
+    """
+    # Specifically require /dev/shm since /tmp might go to an actual disk,
+    # incurring overhead and unnecessary SSD wear.
+    lora_adapter_dev_shm_path = f"/dev/shm/{LORA_ADAPTER_HF_HUB_REPO}"  # noqa: S108
+    os.makedirs(lora_adapter_dev_shm_path, exist_ok=True)
+    shutil.copytree(
+        lora_adapter_path,
+        lora_adapter_dev_shm_path,
+        dirs_exist_ok=True,
+    )
+    print(f"Copy: {lora_adapter_path}, {lora_adapter_dev_shm_path}")
+
+    yield lora_adapter_dev_shm_path
+
+    # Clean up to free memory.
+    shutil.rmtree(lora_adapter_dev_shm_path)
 
 
 @pytest.fixture(scope="session")
@@ -41,7 +93,11 @@ def vllm_model() -> vllm.LLM:
 @pytest.fixture(scope="session")
 def vllm_sampling_params() -> vllm.SamplingParams:
     """Return example vLLM sampling parameters for consistency across tests."""
-    return vllm.SamplingParams(logprobs=NUM_TOP_LOGPROBS, temperature=0, seed=1)
+    return vllm.SamplingParams(
+        logprobs=NUM_TOP_LOGPROBS,
+        temperature=0.5,
+        seed=1,
+    )
 
 
 @pytest.fixture(scope="session")
@@ -49,7 +105,7 @@ def example_prompts() -> list[str]:
     """Return example prompts."""
     return [
         "Vector Institute is located in",
-        "The answer to life the universe and everything is of course",
+        "The answer to life the universe and everything is ",
         "Vector Institute is located in",
     ]
 
@@ -114,20 +170,16 @@ def base_llm_logprobs(
     return extract_logprobs(vllm_responses)
 
 
-@pytest.fixture(scope="session")
-def lora_request() -> LoRARequest:
-    """Return LoRARequest for vLLM LoRA requests."""
-    return LoRARequest("example_adapter", 1, LORA_ADAPTER_PATH)
-
-
-@pytest.fixture(scope="session")
-def lora_llm_logprobs(
+def get_lora_llm_logprobs(
     vllm_model: vllm.LLM,
     example_prompts: list[str],
     vllm_sampling_params: vllm.SamplingParams,
-    lora_request: LoRARequest,
+    _lora_adapter_path_fixture_name: str,
+    request: pytest.FixtureRequest,
 ) -> list[list[vllm.sequence.SampleLogprobs]]:
     """Return logprobs for LoRA-adapted LLM."""
+    lora_adapter_path = request.getfixturevalue(_lora_adapter_path_fixture_name)
+    lora_request = LoRARequest("example_adapter", 1, lora_adapter_path)
     vllm_responses = vllm_model.generate(
         example_prompts,
         vllm_sampling_params,
@@ -136,38 +188,109 @@ def lora_llm_logprobs(
     return extract_logprobs(vllm_responses)
 
 
+@pytest.fixture(scope="session")
+def lora_llm_logprobs_local_and_dev_shm(
+    vllm_model: vllm.LLM,
+    example_prompts: list[str],
+    vllm_sampling_params: vllm.SamplingParams,
+    request: pytest.FixtureRequest,
+) -> tuple[list[list[vllm.sequence.SampleLogprobs]], ...]:
+    """Return logprobs via LoRA adapter loaded locally and from /dev/shm.
+
+    Returns
+    -------
+        Two list of lists (options) of vLLM logprobs.
+        local_adapter_logprobs, dev_shm_adapter_logprobs
+
+    """
+    return tuple(
+        get_lora_llm_logprobs(
+            vllm_model,
+            example_prompts,
+            vllm_sampling_params,
+            _adapter_path,
+            request,
+        )
+        for _adapter_path in [
+            "lora_adapter_path",
+            "lora_adapter_path_dev_shm",
+        ]
+    )
+
+
+# Reuse this test case definition for both base and LoRA logprobs.
 @pytest.mark.parametrize(
     "logprobs_fixture_name",
-    ["base_llm_logprobs", "lora_llm_logprobs"],
+    ["base_llm_logprobs", "lora_llm_logprobs_local_and_dev_shm"],
 )
-def test_get_logprobs(
+def test_logprobs_consistency(
     logprobs_fixture_name: str,
     request: pytest.FixtureRequest,
 ) -> None:
-    """Test obtaining logprobs from base vLLM model."""
-    output_logprobs: list[list[vllm.sequence.SampleLogprobs]] = (
-        request.getfixturevalue(logprobs_fixture_name)
-    )
-    assert_logprobs_allclose(output_logprobs[0][0], output_logprobs[2][0])
+    """Verify consistency of logprobs from base vLLM model.
 
-    with pytest.raises(AssertionError):
-        assert_logprobs_allclose(
-            output_logprobs[2][0],
-            output_logprobs[1][0],
-        )
+    Since vLLM seed is fixed, the same prompt should produce
+    the same logprobs.
+    """
+    _logprobs_fixture_value: (
+        list[list[vllm.sequence.SampleLogprobs]]
+        | tuple[list[list[vllm.sequence.SampleLogprobs]], ...]
+    ) = request.getfixturevalue(logprobs_fixture_name)
+
+    if isinstance(_logprobs_fixture_value, tuple):
+        # A number of logprobs were returned
+        # (e.g., one for local LoRA, one for /dev/shm)
+        output_logprobs = _logprobs_fixture_value
+    else:
+        output_logprobs = [_logprobs_fixture_value]
+
+    for logprobs in output_logprobs:
+        assert_logprobs_allclose(logprobs[0][0], logprobs[2][0])
+
+        with pytest.raises(AssertionError):
+            assert_logprobs_allclose(logprobs[2][0], logprobs[1][0])
 
 
 def test_compare_ref_logprobs(
     base_llm_logprobs: list[list[vllm.sequence.SampleLogprobs]],
-    lora_llm_logprobs: list[list[vllm.sequence.SampleLogprobs]],
+    lora_llm_logprobs_local_and_dev_shm: tuple[
+        list[list[vllm.sequence.SampleLogprobs]],
+        ...,
+    ],
 ) -> None:
     """Ensure base_llm_logprobs are different from lora_llm_logprobs."""
-    for base_llm_seq_logprobs, lora_llm_seq_logprobs in zip(
-        base_llm_logprobs,
-        lora_llm_logprobs,
+    # Test both lora_adapter options: disk and ram-disk
+    for lora_llm_logprobs in lora_llm_logprobs_local_and_dev_shm:
+        for base_llm_seq_logprobs, lora_llm_seq_logprobs in zip(
+            base_llm_logprobs,
+            lora_llm_logprobs,
+        ):
+            with pytest.raises(AssertionError):
+                assert_logprobs_allclose(
+                    base_llm_seq_logprobs[0],
+                    lora_llm_seq_logprobs[0],
+                )
+
+
+def test_compare_lora_logprobs(
+    lora_llm_logprobs_local_and_dev_shm: tuple[
+        list[list[vllm.sequence.SampleLogprobs]],
+        ...,
+    ],
+) -> None:
+    """Ensure LoRA logprobs from local and ram-disk adapters match."""
+    for logprobs_local_seq, logprobs_dev_shm_seq in zip(
+        *lora_llm_logprobs_local_and_dev_shm,
     ):
-        with pytest.raises(AssertionError):
-            assert_logprobs_allclose(
-                base_llm_seq_logprobs[0],
-                lora_llm_seq_logprobs[0],
-            )
+        # Each of these represents the logprobs options for a sequence output.
+        logprobs_local_seq: list[vllm.sequence.SampleLogprobs]
+        logprobs_dev_shm_seq: list[vllm.sequence.SampleLogprobs]
+
+        assert_logprobs_allclose(logprobs_local_seq[0], logprobs_dev_shm_seq[0])
+        sequence_tokens = "".join(
+            [
+                str(next(iter(token.values())).decoded_token)
+                for token in logprobs_local_seq[0]
+            ],
+        )
+        print(f"\nVerified equivalence: {sequence_tokens}")
