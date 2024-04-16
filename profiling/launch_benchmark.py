@@ -36,6 +36,8 @@ config_list = [
     "profiling/configs/benchmark.yaml",
 ]
 
+max_length_list = [1024, 2048, 4096, -1]
+
 slurm_flags_options = {
     "nodes": [1],
     "mem-per-gpu": ["16GB"],
@@ -52,6 +54,7 @@ slurm_pos_args_options = [
     ["profiling/launch_benchmark.sh"],
     config_list,
     model_list,
+    max_length_list,
 ]
 timestamp = int(time.time())
 
@@ -80,7 +83,7 @@ for index, (flag_values, pos_args_option, _) in enumerate(
             arg = (f"--{key}", str(value))
             args.extend(arg)
 
-    args.extend(pos_args_option)
+    args.extend(str(arg) for arg in pos_args_option)
     args_list.append(args)
     print(" ".join(args))
 

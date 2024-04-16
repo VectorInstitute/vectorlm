@@ -67,6 +67,7 @@ def parse_args() -> Namespace:
         "--num_eval_examples",
         default=1000,
     )
+    parser.add_argument("--max_length", type=int)
     return parser.parse_args()
 
 
@@ -240,7 +241,7 @@ class BenchmarkingDataset(Dataset):
         self.num_train_examples = num_train_examples
         self.num_eval_examples = num_eval_examples
 
-        if max_length is not None:
+        if (max_length is not None) and (max_length < 0):
             self.max_length = max_length
         else:
             self.max_length = min(tokenizer.model_max_length, _MAX_SEQ_LENGTH)
@@ -358,7 +359,10 @@ if __name__ == "__main__":
             num_train_examples=args.num_train_examples,
             num_eval_examples=args.num_eval_examples,
             tokenizer=tokenizer,
+            max_length=args.max_length,
         )
+
+        write_metrics("max_length", dataset.max_length)
 
     # instantiate trainer
     trainer = Trainer(
