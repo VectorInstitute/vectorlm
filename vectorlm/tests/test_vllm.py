@@ -218,10 +218,36 @@ def lora_llm_logprobs_local_and_dev_shm(
     )
 
 
-# Reuse this test case definition for both base and LoRA logprobs.
+@pytest.fixture(scope="session")
+def lora_llm_logprobs_local(
+    lora_llm_logprobs_local_and_dev_shm: tuple[
+        list[list[vllm.sequence.SampleLogprobs]],
+        ...,
+    ],
+) -> list[list[vllm.sequence.SampleLogprobs]]:
+    """Return logprobs from locally-loaded LoRA adapters."""
+    return lora_llm_logprobs_local_and_dev_shm[0]
+
+
+@pytest.fixture(scope="session")
+def lora_llm_logprobs_dev_shm(
+    lora_llm_logprobs_local_and_dev_shm: tuple[
+        list[list[vllm.sequence.SampleLogprobs]],
+        ...,
+    ],
+) -> list[list[vllm.sequence.SampleLogprobs]]:
+    """Return logprobs from LoRA adapters loaded via /dev/shm ram-disk."""
+    return lora_llm_logprobs_local_and_dev_shm[1]
+
+
+# Reuse this test case definition across base and LoRA logprobs.
 @pytest.mark.parametrize(
     "logprobs_fixture_name",
-    ["base_llm_logprobs", "lora_llm_logprobs_local_and_dev_shm"],
+    [
+        "base_llm_logprobs",
+        "lora_llm_logprobs_local",
+        "lora_llm_logprobs_dev_shm",
+    ],
 )
 def test_logprobs_consistency(
     logprobs_fixture_name: str,
@@ -232,23 +258,14 @@ def test_logprobs_consistency(
     Since vLLM seed is fixed, the same prompt should produce
     the same logprobs.
     """
-    _logprobs_fixture_value: (
-        list[list[vllm.sequence.SampleLogprobs]]
-        | tuple[list[list[vllm.sequence.SampleLogprobs]], ...]
-    ) = request.getfixturevalue(logprobs_fixture_name)
+    logprobs: list[list[vllm.sequence.SampleLogprobs]] = (
+        request.getfixturevalue(logprobs_fixture_name)
+    )
 
-    if isinstance(_logprobs_fixture_value, tuple):
-        # A number of logprobs were returned
-        # (e.g., one for local LoRA, one for /dev/shm)
-        output_logprobs = _logprobs_fixture_value
-    else:
-        output_logprobs = [_logprobs_fixture_value]
+    assert_logprobs_allclose(logprobs[0][0], logprobs[2][0])
 
-    for logprobs in output_logprobs:
-        assert_logprobs_allclose(logprobs[0][0], logprobs[2][0])
-
-        with pytest.raises(AssertionError):
-            assert_logprobs_allclose(logprobs[2][0], logprobs[1][0])
+    with pytest.raises(AssertionError):
+        assert_logprobs_allclose(logprobs[2][0], logprobs[1][0])
 
 
 def test_compare_ref_logprobs(
