@@ -6,7 +6,7 @@ In experiments labelled as LoRA, we set hidden dimension to 8.
 
 Entries that read NaN represent combinations where the node configuration does not have enough GPU memory for the training run to complete. An exception is gemma-2b, which currently does not support full-rank FSDP fine-tuning.
 
-All values in the table below represent the overall training throughput in tokens per second, aggregated across all GPU devices.
+All values in the table below represent the median training throughput in tokens per second across all training steps, aggregated across all GPU devices.
 
 |                                      | Llama-2-13b-hf | Llama-2-7b-hf | Mistral-7B-v0.1 | Mixtral-8x7B-Instruct-v0.1 | gemma-2b | opt-350m |
 | :----------------------------------- | -------------: | ------------: | --------------: | -------------------------: | -------: | -------: |
