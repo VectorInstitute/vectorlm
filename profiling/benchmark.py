@@ -68,6 +68,7 @@ def parse_args() -> Namespace:
         default=1000,
     )
     parser.add_argument("--max_length", type=int)
+    parser.add_argument("--training_batch_size", type=int)
     return parser.parse_args()
 
 
@@ -241,7 +242,7 @@ class BenchmarkingDataset(Dataset):
         self.num_train_examples = num_train_examples
         self.num_eval_examples = num_eval_examples
 
-        if (max_length is not None) and (max_length < 0):
+        if (max_length is not None) and (max_length > 0):
             self.max_length = max_length
         else:
             self.max_length = min(tokenizer.model_max_length, _MAX_SEQ_LENGTH)
@@ -270,6 +271,10 @@ if __name__ == "__main__":
     args = parse_args()
     config = Config(yaml_path=args.yaml_path)
     setup(config.train_parameters.output_dir)
+
+    if args.training_batch_size is not None:
+        config.dataset.train_bs = args.training_batch_size
+        write_metrics("training_batch_size", args.training_batch_size)
 
     print(f"Writing metrics to {output_path}")
     write_metrics("model_name", args.model_name)

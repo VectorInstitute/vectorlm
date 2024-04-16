@@ -38,6 +38,7 @@ config_list = [
 
 # Set to (-1) to fall back to the max context length of the pre-trained model.
 max_length_list = [1024, 2048, 4096, -1]
+batch_size = [8, 16, 32, 64, 128]
 
 slurm_flags_options = {
     "nodes": [1],
@@ -56,6 +57,7 @@ slurm_pos_args_options = [
     config_list,
     model_list,
     max_length_list,
+    batch_size,
 ]
 timestamp = int(time.time())
 
