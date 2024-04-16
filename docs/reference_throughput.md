@@ -1,9 +1,9 @@
 # Reference Throughput
 
-We've benchmarked VectorLM on the Vaughan cluster for number of model architectures across a variety of node configurations.
+We've benchmarked VectorLM on the Vaughan cluster for a number of model architectures across a variety of node configurations.
 In experiments labelled as LoRA, we set hidden dimension to 8.
 
-For consistency, we use a batch size of 8 and the maximum context length that the pre-trained LLM supports, capped at 65536. Especially for smaller models, it might be possible to achieve a higher throughput by increasing the batch size. 
+For consistency, we use a batch size of 8 and the maximum context length that the pre-trained LLM supports, capped at 65536. Note that especially for smaller models, it might be possible to further increase throughput by switching to a larger batch size.
 
 Entries that read NaN represent combinations where the node configuration does not have enough GPU memory for the training run to complete. An exception is gemma-2b, which currently does not support full-rank FSDP fine-tuning.
 
