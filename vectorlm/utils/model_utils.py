@@ -155,12 +155,31 @@ def load_model_and_tokenizer(
     return model, tokenizer
 
 
+def lora_requires_grad_policy_fn(module: nn.Module) -> bool:
+    """Policy that "turns off" FSDP Flat Param for LoRA-enabled layers.
+
+    FSDP requires consistent requires_grad for each flat param.
+
+    Since LoRA requires_grad tensors are embedded within each layer.
+    This policy "turns off" FSDP flat param optimization by
+    requiring a separate flat param block for each tensor.
+    """
+    if (
+        len(list(module.named_children())) == 0
+        and getattr(module, "weight", None) is not None
+        and module.weight.requires_grad
+    ):
+        return True
+    return False
+
+
 def fsdp_config(
     use_mp: bool,
     layer_to_wrap: nn.Module,
     strategy: str,
     local_rank: int,
     low_cpu_mem_usage: bool,
+    enable_lora: bool = False,
 ) -> dict[str, Any]:
     """Get FSDP config.
 
@@ -172,6 +191,7 @@ def fsdp_config(
         local_rank: The local rank of the current worker.
         low_cpu_mem_usage: Whether to only load model weights on main rank, and
             then scatter them to the other workers.
+        enable_lora: Whether to enable LoRA support.
 
     Returns:
     -------
@@ -205,23 +225,19 @@ def fsdp_config(
         transformer_layer_cls={layer_to_wrap},
     )
 
-    def _requires_grad_policy_fn(module: nn.Module) -> bool:
-        if (
-            len(list(module.named_children())) == 0
-            and getattr(module, "weight", None) is not None
-            and module.weight.requires_grad
-        ):
-            return True
-        return False
+    if enable_lora:
+        # turns off FSDP Flat Param in LoRA layers.
+        lambda_requires_grad_policy = functools.partial(
+            lambda_auto_wrap_policy,
+            lambda_fn=lora_requires_grad_policy_fn,
+        )
+        auto_wrap_policy = functools.partial(
+            _or_policy,
+            policies=[lambda_requires_grad_policy, transformer_wrap_policy],
+        )
+    else:
+        auto_wrap_policy = transformer_wrap_policy
 
-    lambda_requires_grad_policy = functools.partial(
-        lambda_auto_wrap_policy, lambda_fn=_requires_grad_policy_fn
-    )
-
-    auto_wrap_policy = functools.partial(
-        _or_policy,
-        policies=[lambda_requires_grad_policy, transformer_wrap_policy],
-    )
     sharding_strategy = getattr(ShardingStrategy, strategy)
 
     ret_dict["auto_wrap_policy"] = auto_wrap_policy
@@ -241,6 +257,7 @@ def shard_model(
     strategy: str,
     local_rank: int,
     low_cpu_mem_usage: bool,
+    enable_lora: bool = False,
 ) -> nn.Module:
     """Shard the model to workers using FSDP.
 
@@ -254,6 +271,9 @@ def shard_model(
         local_rank: The local rank of the current worker.
         low_cpu_mem_usage: Whether to only load model weights on main rank, and
             then scatter them to the other workers.
+        enable_lora: Whether to enable support for LoRA, where only a subset of
+            parameter tensors requires_grad. Enabling might significantly reduce
+            training throughput, so enable this only when actually using LoRA.
 
     Returns:
     -------
@@ -266,6 +286,7 @@ def shard_model(
         strategy,
         local_rank,
         low_cpu_mem_usage,
+        enable_lora,
     )
     if dist.get_rank() == 0:
         print(f"FSDP config: {fsdp_cfg}")

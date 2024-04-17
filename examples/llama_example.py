@@ -114,6 +114,7 @@ def main(config: Config) -> None:
         training_args.sharding_strategy,
         local_rank,
         training_args.low_cpu_mem_usage,
+        enable_lora=(lora_peft_config is not None),
     )
 
     # load dataset
