@@ -420,7 +420,11 @@ if __name__ == "__main__":
                 file=sys.__stdout__,
             ):
                 batch = next(train_dl_iterator)
-                trainer.step(batch, epoch)
+                num_tokens = len(batch["input_ids"].flatten())
+
+                with track_time("train_step", {"num_tokens": num_tokens}):
+                    trainer.step(batch, epoch)
+
                 profile_handle.step()
                 write_metrics(
                     "torch.cuda.utilization",

@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import math
 import os
-from contextlib import _GeneratorContextManager, contextmanager
-from typing import Any, Callable, Generator
+from typing import Any
 
 import peft
 import torch
@@ -28,18 +27,6 @@ from vectorlm.utils.save_utils import (
     save_peft_adapter,
     save_scheduler,
 )
-
-
-@contextmanager
-def _timer_placeholder(
-    _: str,
-    __: dict[str, Any] | None = None,
-) -> Generator[None, None, None]:
-    try:
-        yield  # start code block
-    finally:
-        # run before exiting
-        pass
 
 
 class Trainer:
@@ -74,10 +61,6 @@ class Trainer:
         config: Config,
         enable_wandb_logging: bool,
         original_dataset_length: int,
-        timer_handle: Callable[
-            [str, dict[str, Any] | None],
-            _GeneratorContextManager[None],
-        ] = _timer_placeholder,
     ) -> None:
         """Initialize the Trainer class.
 
@@ -87,7 +70,6 @@ class Trainer:
             enable_wandb_logging: Whether to enable wandb logging.
             original_dataset_length: The length of the original dataset
                 (divided by the batch size).
-            timer_handle: Optional context manager for profiling.
 
         """
         self.config = config
@@ -107,7 +89,6 @@ class Trainer:
         self.num_update_steps_per_epoch = None
         self.max_steps = None
         self.saving_steps = None
-        self.timer_handle = timer_handle
         self._post_process(original_dataset_length)
 
         if hasattr(self.config, "lora_peft_config"):
@@ -186,21 +167,16 @@ class Trainer:
         if rank == 0:
             save_metadata(save_dir, meta_dict)
 
-        with self.timer_handle("trainer_save_model", {}):
-            # Save adapter only if running LoRA.
-            # Merging adapters into base weights would require gathering
-            # all weights, which would incur significant overhead.
-            print(f"type(self.model): {type(self.model)}")
-            if self.peft_method is peft.utils.peft_types.PeftType.LORA:
-                save_peft_adapter(self.model, save_dir)
-            else:
-                save_model(self.model, save_dir, rank)
+        # Save adapter only if running LoRA.
+        # Merging adapters into base weights would require gathering
+        # all weights, which would incur significant overhead.
+        if self.peft_method is peft.utils.peft_types.PeftType.LORA:
+            save_peft_adapter(self.model, save_dir)
+        else:
+            save_model(self.model, save_dir, rank)
 
-        with self.timer_handle("trainer_save_optimizer", {}):
-            save_optimizer(self.optimizer, self.model, save_dir, rank)
-
-        with self.timer_handle("train_save_scheduler", {}):
-            save_scheduler(self.lr_scheduler, save_dir, rank)
+        save_optimizer(self.optimizer, self.model, save_dir, rank)
+        save_scheduler(self.lr_scheduler, save_dir, rank)
 
         dist.barrier()
 
@@ -287,9 +263,7 @@ class Trainer:
         ):
             self.save_checkpoint(epoch)
 
-        num_tokens = len(train_batch["input_ids"].flatten())
-        with self.timer_handle("train_step", {"num_tokens": num_tokens}):
-            train_loss = self.train_step(train_batch, epoch)
+        train_loss = self.train_step(train_batch, epoch)
 
         test_loss = None
         if self.tr_step % self.logging_steps == 0:
@@ -373,12 +347,9 @@ class Trainer:
             with torch.no_grad():
                 batch.pop("id")
                 batch["input_ids"] = batch["input_ids"].type(torch.LongTensor)
-                num_tokens = len(batch["input_ids"].flatten())
                 batch["labels"] = batch["labels"].type(torch.LongTensor)
-
-                with self.timer_handle("eval_step", {"num_tokens": num_tokens}):
-                    out = self.model(**batch)
-                    eval_loss += out.loss
+                out = self.model(**batch)
+                eval_loss += out.loss
 
         gathered_eval_loss = _gather(eval_loss.reshape(1)).mean().item()
         mean_eval_loss = gathered_eval_loss / len(self.dataset.eval_dataloader)
