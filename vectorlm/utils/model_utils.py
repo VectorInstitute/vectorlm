@@ -160,8 +160,8 @@ def lora_requires_grad_policy_fn(module: nn.Module) -> bool:
 
     FSDP requires consistent requires_grad for each flat param.
 
-    Since LoRA requires_grad tensors are embedded within each layer.
-    This policy "turns off" FSDP flat param optimization by
+    Since LoRA requires_grad tensors are embedded within each layer,
+    this policy "turns off" FSDP flat param optimization by
     requiring a separate flat param block for each tensor.
     """
     if (
