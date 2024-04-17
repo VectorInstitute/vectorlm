@@ -287,36 +287,19 @@ class Trainer:
         self.dataset.update_processed_ids(ids)
 
         if (self.tr_step + 1) % self.gas != self.gas - 1:
-            if hasattr(self.model, "no_sync"):
-                # fsdp: no need to sync while accumulating gradients
-                with self.model.no_sync():
-                    out = self.model(**batch)
-                    tr_step_loss = out.loss
-                    (tr_step_loss / self.gas).backward()
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        self.config.max_grad_norm,
-                    )
-            else:
-                # non-fsdp
+            # no need to sync while accumulating gradients
+            with self.model.no_sync():
                 out = self.model(**batch)
                 tr_step_loss = out.loss
                 (tr_step_loss / self.gas).backward()
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.config.max_grad_norm,
-                )
-
+                self.model.clip_grad_norm_(self.config.max_grad_norm)
         else:
             # next forward / backward pass will be synced
             dist.barrier()
             out = self.model(**batch)
             tr_step_loss = out.loss
             (tr_step_loss / self.gas).backward()
-            torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(),
-                self.config.max_grad_norm,
-            )
+            self.model.clip_grad_norm_(self.config.max_grad_norm)
             self.optimizer.step()
             if isinstance(self.lr_scheduler, ReduceLROnPlateau):
                 self.lr_scheduler.step(self.metric)
