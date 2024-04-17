@@ -250,7 +250,7 @@ def test_logprobs_consistency(
     logprobs_fixture_name: str,
     request: pytest.FixtureRequest,
 ) -> None:
-    """Verify consistency of logprobs from base vLLM model.
+    """Verify consistency of logprobs.
 
     Since vLLM seed is fixed, the same prompt should produce
     the same logprobs.
