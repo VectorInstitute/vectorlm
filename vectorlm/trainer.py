@@ -18,13 +18,10 @@ from vectorlm.utils.save_utils import (
     checkpoint_exists,
     get_latest_checkpoint_dir,
     load_metadata,
-    load_model,
-    load_optimizer,
+    load_model_and_optimizer,
     load_scheduler,
     save_metadata,
-    save_model,
-    save_optimizer,
-    save_peft_adapter,
+    save_model_and_optimizer,
     save_scheduler,
 )
 
@@ -166,16 +163,7 @@ class Trainer:
         )
         if rank == 0:
             save_metadata(save_dir, meta_dict)
-
-        # Save adapter only if running LoRA.
-        # Merging adapters into base weights would require gathering
-        # all weights, which would incur significant overhead.
-        if self.peft_method is peft.utils.peft_types.PeftType.LORA:
-            save_peft_adapter(self.model, save_dir)
-        else:
-            save_model(self.model, save_dir, rank)
-
-        save_optimizer(self.optimizer, self.model, save_dir, rank)
+        save_model_and_optimizer(self.optimizer, self.model, save_dir, rank)
         save_scheduler(self.lr_scheduler, save_dir, rank)
 
         dist.barrier()
@@ -199,19 +187,7 @@ class Trainer:
         self.tr_step = step
         self.dataset.set_processed_ids(ids)
         self.dataset.setup_dataloaders()
-
-        if self.peft_method is peft.utils.peft_types.PeftType.LORA:
-            # The FSDP wrapper is applied to self.model after the LoRA wrapper.
-            # It is unclear whether peft supports updating the LoRA wrapper
-            # tensors of a FSDP-wrapped module. Hence, the peft adapter
-            # is restored when initializing the LoRA wrapper
-            # before applying the FSDP wrapper, and the is_peft_adapter_restored
-            # ensures that the adapter is indeed applied.
-            assert self.is_peft_adapter_restored
-        else:
-            load_model(self.model, checkpoint_dir, rank)
-
-        load_optimizer(self.optimizer, self.model, checkpoint_dir, rank)
+        load_model_and_optimizer(self.optimizer, self.model, checkpoint_dir)
         load_scheduler(self.lr_scheduler, checkpoint_dir, rank)
         dist.barrier()
         return epoch
