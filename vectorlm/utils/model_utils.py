@@ -7,7 +7,6 @@ from typing import Any, Callable
 import torch
 import torch.distributed as dist
 from peft import LoraConfig, PeftModel, TaskType, get_peft_model
-from peft.utils.other import fsdp_auto_wrap_policy
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
@@ -17,6 +16,11 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     FullyShardedDataParallel as FSDP,
+)
+from torch.distributed.fsdp.wrap import (
+    _or_policy,
+    lambda_auto_wrap_policy,
+    transformer_auto_wrap_policy,
 )
 from transformers import (
     AutoModelForCausalLM,
@@ -153,7 +157,7 @@ def load_model_and_tokenizer(
 
 def fsdp_config(
     use_mp: bool,
-    model_to_wrap: nn.Module,
+    layer_to_wrap: nn.Module,
     strategy: str,
     local_rank: int,
     low_cpu_mem_usage: bool,
@@ -163,7 +167,7 @@ def fsdp_config(
     Args:
     ----
         use_mp: Whether to use mixed-precision.
-        model_to_wrap: The HuggingFace model to wrap using FSDP.
+        layer_to_wrap: The layer we are wrapping using FSDP.
         strategy: The sharding strategy to use.
         local_rank: The local rank of the current worker.
         low_cpu_mem_usage: Whether to only load model weights on main rank, and
@@ -196,9 +200,31 @@ def fsdp_config(
         )
         ret_dict["mixed_precision"] = mp_policy
 
+    transformer_wrap_policy = functools.partial(
+        transformer_auto_wrap_policy,
+        transformer_layer_cls={layer_to_wrap},
+    )
+
+    def _requires_grad_policy_fn(module: nn.Module) -> bool:
+        if (
+            len(list(module.named_children())) == 0
+            and getattr(module, "weight", None) is not None
+            and module.weight.requires_grad
+        ):
+            return True
+        return False
+
+    lambda_requires_grad_policy = functools.partial(
+        lambda_auto_wrap_policy, lambda_fn=_requires_grad_policy_fn
+    )
+
+    auto_wrap_policy = functools.partial(
+        _or_policy,
+        policies=[lambda_requires_grad_policy, transformer_wrap_policy],
+    )
     sharding_strategy = getattr(ShardingStrategy, strategy)
 
-    ret_dict["auto_wrap_policy"] = fsdp_auto_wrap_policy(model_to_wrap)
+    ret_dict["auto_wrap_policy"] = auto_wrap_policy
     ret_dict["sharding_strategy"] = sharding_strategy
     ret_dict["device_id"] = torch.cuda.current_device()
     if low_cpu_mem_usage:
@@ -233,11 +259,10 @@ def shard_model(
     -------
         The sharded module with the requested configurations.
 
-
     """
     fsdp_cfg = fsdp_config(
         use_mp,
-        model,
+        layer_to_wrap,
         strategy,
         local_rank,
         low_cpu_mem_usage,

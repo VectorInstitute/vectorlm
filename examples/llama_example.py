@@ -84,10 +84,9 @@ def main(config: Config) -> None:
         "lora_peft_config",
         None,
     )
+    is_peft_adapter_restored = False
     if lora_peft_config is not None:
-        is_peft_adapter_restored = False
         peft_adapter_path = None
-
         # Restore peft adapter from filesystem if available.
         if checkpoint_exists(training_args.output_dir):
             peft_adapter_path = os.path.join(
@@ -108,7 +107,7 @@ def main(config: Config) -> None:
     decoder_layer_module = get_submodule_by_pattern(model, r"DecoderLayer$")
     assert decoder_layer_module is not None, f"No DecoderLayer found in {model}"
     model = shard_model(
-        model.bfloat16(),
+        model,
         decoder_layer_module,
         training_args.use_mp,
         training_args.use_activation_checkpointing,
