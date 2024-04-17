@@ -179,7 +179,7 @@ def fsdp_config(
     strategy: str,
     local_rank: int,
     low_cpu_mem_usage: bool,
-    enable_lora: bool = False,
+    is_lora_enabled: bool = False,
 ) -> dict[str, Any]:
     """Get FSDP config.
 
@@ -191,7 +191,7 @@ def fsdp_config(
         local_rank: The local rank of the current worker.
         low_cpu_mem_usage: Whether to only load model weights on main rank, and
             then scatter them to the other workers.
-        enable_lora: Whether to enable LoRA support.
+        is_lora_enabled: Whether to enable LoRA support.
 
     Returns:
     -------
@@ -225,7 +225,7 @@ def fsdp_config(
         transformer_layer_cls={layer_to_wrap},
     )
 
-    if enable_lora:
+    if is_lora_enabled:
         # turns off FSDP Flat Param in LoRA layers.
         lambda_requires_grad_policy = functools.partial(
             lambda_auto_wrap_policy,
@@ -257,7 +257,7 @@ def shard_model(
     strategy: str,
     local_rank: int,
     low_cpu_mem_usage: bool,
-    enable_lora: bool = False,
+    is_lora_enabled: bool = False,
 ) -> nn.Module:
     """Shard the model to workers using FSDP.
 
@@ -271,7 +271,7 @@ def shard_model(
         local_rank: The local rank of the current worker.
         low_cpu_mem_usage: Whether to only load model weights on main rank, and
             then scatter them to the other workers.
-        enable_lora: Whether to enable support for LoRA, where only a subset of
+        is_lora_enabled: Whether to enable support for LoRA, where only a subset of
             parameter tensors requires_grad. Enabling might significantly reduce
             training throughput, so enable this only when actually using LoRA.
 
@@ -286,7 +286,7 @@ def shard_model(
         strategy,
         local_rank,
         low_cpu_mem_usage,
-        enable_lora,
+        is_lora_enabled,
     )
     if dist.get_rank() == 0:
         print(f"FSDP config: {fsdp_cfg}")
