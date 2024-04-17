@@ -56,11 +56,11 @@ def lora_adapter_path() -> str:
 def lora_adapter_path_dev_shm(
     lora_adapter_path: str,
 ) -> Generator[str, None, None]:
-    """Create a copy of LoRA adapters on /dev/shm.
+    """Create a copy of LoRA adapters within /dev/shm.
 
     Returns
     -------
-        Path to adapters on the /dev/shm filesystem.
+        Path to adapters in the /dev/shm filesystem.
 
     """
     # Specifically require /dev/shm since /tmp might go to an actual disk,
@@ -153,10 +153,7 @@ def assert_logprobs_allclose(
         token_logprobs_b_array = np.asarray(
             [token_logprobs_b[k].logprob for k in token_logprobs_a],
         )
-        assert np.allclose(
-            np.asarray(token_logprobs_a_array),
-            np.asarray(token_logprobs_b_array),
-        )
+        assert np.allclose(token_logprobs_a_array, token_logprobs_b_array)
 
 
 @pytest.fixture(scope="session")
