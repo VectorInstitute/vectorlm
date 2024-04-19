@@ -74,8 +74,6 @@ def parse_args() -> Namespace:
 
 # unix timestamp
 launch_time = time.time()
-os.makedirs("data/benchmark", exist_ok=True)
-os.makedirs("data/trace", exist_ok=True)
 output_path = f"data/benchmark/{launch_time}.jsonl"
 profiler_output_path = f"data/trace/{launch_time}.json"
 
@@ -270,6 +268,10 @@ class BenchmarkingDataset(Dataset):
 if __name__ == "__main__":
     args = parse_args()
     config = Config(yaml_path=args.yaml_path)
+
+    os.makedirs("data/benchmark", exist_ok=True)
+    os.makedirs("data/trace", exist_ok=True)
+
     setup(config.train_parameters.output_dir)
 
     if args.training_batch_size is not None:
