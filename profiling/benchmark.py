@@ -67,6 +67,8 @@ def parse_args() -> Namespace:
         "--num_eval_examples",
         default=1000,
     )
+    parser.add_argument("--max_length", type=int)
+    parser.add_argument("--training_batch_size", type=int)
     return parser.parse_args()
 
 
@@ -240,7 +242,7 @@ class BenchmarkingDataset(Dataset):
         self.num_train_examples = num_train_examples
         self.num_eval_examples = num_eval_examples
 
-        if max_length is not None:
+        if (max_length is not None) and (max_length > 0):
             self.max_length = max_length
         else:
             self.max_length = min(tokenizer.model_max_length, _MAX_SEQ_LENGTH)
@@ -269,6 +271,10 @@ if __name__ == "__main__":
     args = parse_args()
     config = Config(yaml_path=args.yaml_path)
     setup(config.train_parameters.output_dir)
+
+    if args.training_batch_size is not None:
+        config.dataset.train_bs = args.training_batch_size
+        write_metrics("training_batch_size", args.training_batch_size)
 
     print(f"Writing metrics to {output_path}")
     write_metrics("model_name", args.model_name)
@@ -358,7 +364,10 @@ if __name__ == "__main__":
             num_train_examples=args.num_train_examples,
             num_eval_examples=args.num_eval_examples,
             tokenizer=tokenizer,
+            max_length=args.max_length,
         )
+
+        write_metrics("max_length", dataset.max_length)
 
     # instantiate trainer
     trainer = Trainer(
@@ -411,7 +420,11 @@ if __name__ == "__main__":
                 file=sys.__stdout__,
             ):
                 batch = next(train_dl_iterator)
-                trainer.step(batch, epoch)
+                num_tokens = len(batch["input_ids"].flatten())
+
+                with track_time("train_step", {"num_tokens": num_tokens}):
+                    trainer.step(batch, epoch)
+
                 profile_handle.step()
                 write_metrics(
                     "torch.cuda.utilization",

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import math
 import os
-from contextlib import _GeneratorContextManager, contextmanager
-from typing import Any, Callable, Generator
+from typing import Any
 
+import peft
 import torch
 import torch.distributed as dist
 from torch.optim import Optimizer
@@ -24,20 +24,9 @@ from vectorlm.utils.save_utils import (
     save_metadata,
     save_model,
     save_optimizer,
+    save_peft_adapter,
     save_scheduler,
 )
-
-
-@contextmanager
-def _timer_placeholder(
-    _: str,
-    __: dict[str, Any] | None = None,
-) -> Generator[None, None, None]:
-    try:
-        yield  # start code block
-    finally:
-        # run before exiting
-        pass
 
 
 class Trainer:
@@ -64,15 +53,14 @@ class Trainer:
 
     """
 
+    peft_method: str | None = None
+    is_peft_adapter_restored: bool = False
+
     def __init__(
         self,
         config: Config,
         enable_wandb_logging: bool,
         original_dataset_length: int,
-        timer_handle: Callable[
-            [str, dict[str, Any] | None],
-            _GeneratorContextManager[None],
-        ] = _timer_placeholder,
     ) -> None:
         """Initialize the Trainer class.
 
@@ -82,7 +70,6 @@ class Trainer:
             enable_wandb_logging: Whether to enable wandb logging.
             original_dataset_length: The length of the original dataset
                 (divided by the batch size).
-            timer_handle: Optional context manager for profiling.
 
         """
         self.config = config
@@ -102,8 +89,10 @@ class Trainer:
         self.num_update_steps_per_epoch = None
         self.max_steps = None
         self.saving_steps = None
-        self.timer_handle = timer_handle
         self._post_process(original_dataset_length)
+
+        if hasattr(self.config, "lora_peft_config"):
+            self.peft_method = peft.utils.peft_types.PeftType.LORA
 
     def _post_process(self, ds_orig_length: int) -> None:
         """Calculate steps for weight updates and saving."""
@@ -128,6 +117,7 @@ class Trainer:
         dataset: Dataset,
         optimizer: Optimizer,
         lr_scheduler: LRScheduler | ReduceLROnPlateau,
+        is_peft_adapter_restored: bool = False,
     ) -> None:
         """Set all essential training requirements.
 
@@ -139,6 +129,8 @@ class Trainer:
             optimizer: The training optimizer.
             lr_scheduler: The LR scheduler.
 
+            is_peft_adapter_restored: whether peft is enabled and
+                adapters were restored from filesystem.
 
         """
         self.model = model
@@ -146,6 +138,8 @@ class Trainer:
         self.dataset = dataset
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
+
+        self.is_peft_adapter_restored = is_peft_adapter_restored
 
     def save_checkpoint(self, epoch: int) -> None:
         """Save all states.
@@ -173,14 +167,16 @@ class Trainer:
         if rank == 0:
             save_metadata(save_dir, meta_dict)
 
-        with self.timer_handle("trainer_save_model"):
+        # Save adapter only if running LoRA.
+        # Merging adapters into base weights would require gathering
+        # all weights, which would incur significant overhead.
+        if self.peft_method is peft.utils.peft_types.PeftType.LORA:
+            save_peft_adapter(self.model, save_dir)
+        else:
             save_model(self.model, save_dir, rank)
 
-        with self.timer_handle("trainer_save_optimizer"):
-            save_optimizer(self.optimizer, self.model, save_dir, rank)
-
-        with self.timer_handle("train_save_scheduler"):
-            save_scheduler(self.lr_scheduler, save_dir, rank)
+        save_optimizer(self.optimizer, self.model, save_dir, rank)
+        save_scheduler(self.lr_scheduler, save_dir, rank)
 
         dist.barrier()
 
@@ -203,7 +199,18 @@ class Trainer:
         self.tr_step = step
         self.dataset.set_processed_ids(ids)
         self.dataset.setup_dataloaders()
-        load_model(self.model, checkpoint_dir, rank)
+
+        if self.peft_method is peft.utils.peft_types.PeftType.LORA:
+            # The FSDP wrapper is applied to self.model after the LoRA wrapper.
+            # It is unclear whether peft supports updating the LoRA wrapper
+            # tensors of a FSDP-wrapped module. Hence, the peft adapter
+            # is restored when initializing the LoRA wrapper
+            # before applying the FSDP wrapper, and the is_peft_adapter_restored
+            # ensures that the adapter is indeed applied.
+            assert self.is_peft_adapter_restored
+        else:
+            load_model(self.model, checkpoint_dir, rank)
+
         load_optimizer(self.optimizer, self.model, checkpoint_dir, rank)
         load_scheduler(self.lr_scheduler, checkpoint_dir, rank)
         dist.barrier()
@@ -256,9 +263,7 @@ class Trainer:
         ):
             self.save_checkpoint(epoch)
 
-        num_tokens = len(train_batch["input_ids"].flatten())
-        with self.timer_handle("train_step", {"num_tokens": num_tokens}):
-            train_loss = self.train_step(train_batch, epoch)
+        train_loss = self.train_step(train_batch, epoch)
 
         test_loss = None
         if self.tr_step % self.logging_steps == 0:
@@ -282,36 +287,19 @@ class Trainer:
         self.dataset.update_processed_ids(ids)
 
         if (self.tr_step + 1) % self.gas != self.gas - 1:
-            if hasattr(self.model, "no_sync"):
-                # fsdp: no need to sync while accumulating gradients
-                with self.model.no_sync():
-                    out = self.model(**batch)
-                    tr_step_loss = out.loss
-                    (tr_step_loss / self.gas).backward()
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        self.config.max_grad_norm,
-                    )
-            else:
-                # non-fsdp
+            # no need to sync while accumulating gradients
+            with self.model.no_sync():
                 out = self.model(**batch)
                 tr_step_loss = out.loss
                 (tr_step_loss / self.gas).backward()
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.config.max_grad_norm,
-                )
-
+                self.model.clip_grad_norm_(self.config.max_grad_norm)
         else:
             # next forward / backward pass will be synced
             dist.barrier()
             out = self.model(**batch)
             tr_step_loss = out.loss
             (tr_step_loss / self.gas).backward()
-            torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(),
-                self.config.max_grad_norm,
-            )
+            self.model.clip_grad_norm_(self.config.max_grad_norm)
             self.optimizer.step()
             if isinstance(self.lr_scheduler, ReduceLROnPlateau):
                 self.lr_scheduler.step(self.metric)
@@ -342,12 +330,9 @@ class Trainer:
             with torch.no_grad():
                 batch.pop("id")
                 batch["input_ids"] = batch["input_ids"].type(torch.LongTensor)
-                num_tokens = len(batch["input_ids"].flatten())
                 batch["labels"] = batch["labels"].type(torch.LongTensor)
-
-                with self.timer_handle("eval_step", {"num_tokens": num_tokens}):
-                    out = self.model(**batch)
-                    eval_loss += out.loss
+                out = self.model(**batch)
+                eval_loss += out.loss
 
         gathered_eval_loss = _gather(eval_loss.reshape(1)).mean().item()
         mean_eval_loss = gathered_eval_loss / len(self.dataset.eval_dataloader)

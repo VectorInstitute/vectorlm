@@ -23,7 +23,11 @@ from vectorlm.utils.model_utils import (
     shard_model,
 )
 from vectorlm.utils.optimizer_utils import get_custom_scheduler
-from vectorlm.utils.save_utils import save_consolidated_model
+from vectorlm.utils.save_utils import (
+    checkpoint_exists,
+    get_latest_checkpoint_dir,
+    save_consolidated_model,
+)
 
 
 def parse_args() -> Namespace:
@@ -76,20 +80,41 @@ def main(config: Config) -> None:
     )
 
     lora_peft_config = getattr(
-        config.train_parameters, "lora_peft_config", None,
+        config.train_parameters,
+        "lora_peft_config",
+        None,
     )
+    is_peft_adapter_restored = False
     if lora_peft_config is not None:
-        model = get_lora_model_from_base_model(model, lora_peft_config)
+        peft_adapter_path = None
+        # Restore peft adapter from filesystem if available.
+        if checkpoint_exists(training_args.output_dir):
+            peft_adapter_path = os.path.join(
+                training_args.output_dir,
+                "checkpoints",
+                get_latest_checkpoint_dir(
+                    os.path.join(training_args.output_dir, "checkpoints"),
+                ),
+            )
+            is_peft_adapter_restored = True
+
+        model = get_lora_model_from_base_model(
+            model,
+            lora_peft_config,
+            peft_adapter_path,
+        )
 
     decoder_layer_module = get_submodule_by_pattern(model, r"DecoderLayer$")
+    assert decoder_layer_module is not None, f"No DecoderLayer found in {model}"
     model = shard_model(
-        model.bfloat16(),
+        model,
         decoder_layer_module,
         training_args.use_mp,
         training_args.use_activation_checkpointing,
         training_args.sharding_strategy,
         local_rank,
         training_args.low_cpu_mem_usage,
+        is_lora_enabled=(lora_peft_config is not None),
     )
 
     # load dataset
@@ -127,6 +152,7 @@ def main(config: Config) -> None:
         dataset,
         optimizer,
         lr_scheduler,
+        is_peft_adapter_restored,
     )
 
     # Checkpoint check. Always call before training.

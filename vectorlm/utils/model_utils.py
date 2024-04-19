@@ -7,7 +7,6 @@ from typing import Any, Callable
 import torch
 import torch.distributed as dist
 from peft import LoraConfig, PeftModel, TaskType, get_peft_model
-from peft.utils.other import fsdp_auto_wrap_policy
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
@@ -17,6 +16,11 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     FullyShardedDataParallel as FSDP,
+)
+from torch.distributed.fsdp.wrap import (
+    _or_policy,
+    lambda_auto_wrap_policy,
+    transformer_auto_wrap_policy,
 )
 from transformers import (
     AutoModelForCausalLM,
@@ -42,7 +46,9 @@ def get_half_precision_model(model: nn.Module) -> nn.Module:
 
 
 def get_lora_model_from_base_model(
-    base_model: nn.Module, peft_config_dict: dict[str, Any],
+    base_model: PreTrainedModel,
+    peft_config_dict: dict[str, Any],
+    peft_adapter_path: str | None = None,
 ) -> PeftModel:
     """Initialize lora peft configuration from a non-lora model.
 
@@ -50,6 +56,8 @@ def get_lora_model_from_base_model(
     ----
         base_model: HuggingFace Transformer model to wrap.
         peft_config_dict: configuration from yaml config file.
+        peft_adapter_path: optionally, initialize peft adapters
+            using tensors loaded from the filesystem.
 
     Returns:
     -------
@@ -62,9 +70,18 @@ def get_lora_model_from_base_model(
 
     # See github.com/pytorch/pytorch/pull/102212
     base_model.load_state_dict(base_model.state_dict(), assign=True)
-    lora_model = get_peft_model(base_model, lora_config)
-    lora_model = get_half_precision_model(lora_model)
 
+    if peft_adapter_path is not None:
+        lora_model = PeftModel.from_pretrained(
+            base_model,
+            peft_adapter_path,
+            is_trainable=True,
+        )
+        print(f"Restored peft_adapter from {peft_adapter_path}.")
+    else:
+        lora_model = get_peft_model(base_model, lora_config)
+
+    lora_model = get_half_precision_model(lora_model)
     assert isinstance(lora_model, PeftModel)
     lora_model.print_trainable_parameters()
     return lora_model
@@ -138,23 +155,43 @@ def load_model_and_tokenizer(
     return model, tokenizer
 
 
+def lora_requires_grad_policy_fn(module: nn.Module) -> bool:
+    """Policy that "turns off" FSDP Flat Param for LoRA-enabled layers.
+
+    FSDP requires consistent requires_grad for each flat param.
+
+    Since LoRA requires_grad tensors are embedded within each layer,
+    this policy "turns off" FSDP flat param optimization by
+    requiring a separate flat param block for each tensor.
+    """
+    if (
+        len(list(module.named_children())) == 0
+        and getattr(module, "weight", None) is not None
+        and module.weight.requires_grad
+    ):
+        return True
+    return False
+
+
 def fsdp_config(
     use_mp: bool,
-    model_to_wrap: nn.Module,
+    layer_to_wrap: nn.Module,
     strategy: str,
     local_rank: int,
     low_cpu_mem_usage: bool,
+    is_lora_enabled: bool = False,
 ) -> dict[str, Any]:
     """Get FSDP config.
 
     Args:
     ----
         use_mp: Whether to use mixed-precision.
-        model_to_wrap: The HuggingFace model to wrap using FSDP.
+        layer_to_wrap: The layer we are wrapping using FSDP.
         strategy: The sharding strategy to use.
         local_rank: The local rank of the current worker.
         low_cpu_mem_usage: Whether to only load model weights on main rank, and
             then scatter them to the other workers.
+        is_lora_enabled: Whether to enable LoRA support.
 
     Returns:
     -------
@@ -183,9 +220,27 @@ def fsdp_config(
         )
         ret_dict["mixed_precision"] = mp_policy
 
+    transformer_wrap_policy = functools.partial(
+        transformer_auto_wrap_policy,
+        transformer_layer_cls={layer_to_wrap},
+    )
+
+    if is_lora_enabled:
+        # turns off FSDP Flat Param in LoRA layers.
+        lambda_requires_grad_policy = functools.partial(
+            lambda_auto_wrap_policy,
+            lambda_fn=lora_requires_grad_policy_fn,
+        )
+        auto_wrap_policy = functools.partial(
+            _or_policy,
+            policies=[lambda_requires_grad_policy, transformer_wrap_policy],
+        )
+    else:
+        auto_wrap_policy = transformer_wrap_policy
+
     sharding_strategy = getattr(ShardingStrategy, strategy)
 
-    ret_dict["auto_wrap_policy"] = fsdp_auto_wrap_policy(model_to_wrap)
+    ret_dict["auto_wrap_policy"] = auto_wrap_policy
     ret_dict["sharding_strategy"] = sharding_strategy
     ret_dict["device_id"] = torch.cuda.current_device()
     if low_cpu_mem_usage:
@@ -202,6 +257,7 @@ def shard_model(
     strategy: str,
     local_rank: int,
     low_cpu_mem_usage: bool,
+    is_lora_enabled: bool = False,
 ) -> nn.Module:
     """Shard the model to workers using FSDP.
 
@@ -215,19 +271,22 @@ def shard_model(
         local_rank: The local rank of the current worker.
         low_cpu_mem_usage: Whether to only load model weights on main rank, and
             then scatter them to the other workers.
+        is_lora_enabled: Whether to enable support for LoRA, where only a subset of
+            parameter tensors requires_grad. Enabling might significantly reduce
+            training throughput, so enable this only when actually using LoRA.
 
     Returns:
     -------
         The sharded module with the requested configurations.
 
-
     """
     fsdp_cfg = fsdp_config(
         use_mp,
-        model,
+        layer_to_wrap,
         strategy,
         local_rank,
         low_cpu_mem_usage,
+        is_lora_enabled,
     )
     if dist.get_rank() == 0:
         print(f"FSDP config: {fsdp_cfg}")
@@ -269,7 +328,8 @@ def hook_activation_checkpointing(
 
 
 def get_submodule_by_pattern(
-    module: nn.Module, pattern: str,
+    module: nn.Module,
+    pattern: str,
 ) -> type[nn.Module] | None:
     """Return the first module.cls that matches pattern at least partially.
 
