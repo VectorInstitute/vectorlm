@@ -27,6 +27,7 @@ from vectorlm.utils.save_utils import (
     checkpoint_exists,
     get_latest_checkpoint_dir,
     save_consolidated_model,
+    save_peft_adapter,
 )
 
 
@@ -85,7 +86,9 @@ def main(config: Config) -> None:
         None,
     )
     is_peft_adapter_restored = False
+    is_lora_enabled = False
     if lora_peft_config is not None:
+        is_lora_enabled = True
         peft_adapter_path = None
         # Restore peft adapter from filesystem if available.
         if checkpoint_exists(training_args.output_dir):
@@ -114,7 +117,7 @@ def main(config: Config) -> None:
         training_args.sharding_strategy,
         local_rank,
         training_args.low_cpu_mem_usage,
-        is_lora_enabled=(lora_peft_config is not None),
+        is_lora_enabled,
     )
 
     # load dataset
@@ -179,7 +182,11 @@ def main(config: Config) -> None:
                 f"epoch_{epoch}",
                 "end-epoch-model",
             )
-        save_consolidated_model(trainer.model, hf_save_dir, rank)
+
+        if is_lora_enabled:
+            save_peft_adapter(trainer.model, hf_save_dir)
+        else:
+            save_consolidated_model(trainer.model, hf_save_dir, rank)
         dataset.reset_dataloaders()
 
 

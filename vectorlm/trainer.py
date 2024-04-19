@@ -22,6 +22,7 @@ from vectorlm.utils.save_utils import (
     load_scheduler,
     save_metadata,
     save_model_and_optimizer,
+    save_peft_adapter,
     save_scheduler,
 )
 
@@ -163,7 +164,20 @@ class Trainer:
         )
         if rank == 0:
             save_metadata(save_dir, meta_dict)
-        save_model_and_optimizer(self.optimizer, self.model, save_dir, rank)
+
+        # If peft is enabled, save only the peft adapters
+        # and adapter optimizer state, but not base LLM weights.
+        save_model_and_optimizer(
+            self.optimizer,
+            self.model,
+            save_dir,
+            rank,
+            include_model_state=(self.peft_method is None),
+        )
+
+        if self.peft_method is not None:
+            save_peft_adapter(self.model, save_dir)
+
         save_scheduler(self.lr_scheduler, save_dir, rank)
 
         dist.barrier()
@@ -187,7 +201,19 @@ class Trainer:
         self.tr_step = step
         self.dataset.set_processed_ids(ids)
         self.dataset.setup_dataloaders()
-        load_model_and_optimizer(self.optimizer, self.model, checkpoint_dir)
+
+        if self.peft_method is not None:
+            # peft adapters are not restored in this method.
+            # These should have been restored before applying FSDP.
+            assert self.is_peft_adapter_restored
+
+        # Skip overwriting base model weights if peft is enabled.
+        load_model_and_optimizer(
+            self.optimizer,
+            self.model,
+            checkpoint_dir,
+            optimizer_only=self.is_peft_adapter_restored,
+        )
         load_scheduler(self.lr_scheduler, checkpoint_dir, rank)
         dist.barrier()
         return epoch
