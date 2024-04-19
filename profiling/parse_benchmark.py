@@ -15,9 +15,8 @@ import pandas as pd
 
 Numbers = Union[int, float]
 NumericalTypes = Union[Numbers, np.ndarray]
-V = TypeVar("V")
-Aggregator = TypeVar("Aggregator")
 Numerical = TypeVar("Numerical", bound=NumericalTypes)
+Aggregator = TypeVar("Aggregator")
 
 
 @dataclass
