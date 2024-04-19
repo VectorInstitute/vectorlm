@@ -312,11 +312,7 @@ if __name__ == "__main__":
     dist.barrier()
 
     # load model and tokenizer
-    lora_peft_config = getattr(
-        config.train_parameters,
-        "lora_peft_config",
-        None,
-    )
+    lora_peft_config = config.train_parameters.get("lora_peft_config")
 
     with track_time("model_load"):
         model, tokenizer = load_model_and_tokenizer(

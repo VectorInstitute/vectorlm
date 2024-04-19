@@ -80,11 +80,7 @@ def main(config: Config) -> None:
         training_args.low_cpu_mem_usage,
     )
 
-    lora_peft_config = getattr(
-        config.train_parameters,
-        "lora_peft_config",
-        None,
-    )
+    lora_peft_config = config.train_parameters.get("lora_peft_config")
     is_peft_adapter_restored = False
     is_lora_enabled = False
     if lora_peft_config is not None:

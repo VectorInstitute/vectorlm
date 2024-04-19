@@ -89,7 +89,7 @@ class Trainer:
         self.saving_steps = None
         self._post_process(original_dataset_length)
 
-        if hasattr(self.config, "lora_peft_config"):
+        if "lora_peft_config" in self.config:
             self.peft_method = peft.utils.peft_types.PeftType.LORA
 
     def _post_process(self, ds_orig_length: int) -> None:
