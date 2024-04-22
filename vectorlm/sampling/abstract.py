@@ -1,9 +1,4 @@
-"""Wrapper around inference engine.
-
-Provides the following functionalities:
-- Batch inference
-- LoRA state tracking
-"""
+"""Wrapper around sampling engine."""
 
 from __future__ import annotations
 
@@ -14,15 +9,15 @@ import vllm
 from vectorlm.trainer import Trainer
 
 
-class AbstractInferenceEngine(ABC):
-    """Interface for the inference engine."""
+class AbstractSamplingEngine(ABC):
+    """Interface for the sampling engine."""
 
     def __init__(
         self,
         trainer: Trainer,
         sampling_params: vllm.SamplingParams | None = None,
     ) -> None:
-        """Initialize inference engine.
+        """Initialize sampling engine.
 
         Params:
             trainer: Trainer instance.
@@ -33,7 +28,7 @@ class AbstractInferenceEngine(ABC):
         self.sampling_params = sampling_params
 
     def update(self, trainer: Trainer | None = None) -> None:
-        """Inform the inference engine that the model in trainer is updated.
+        """Inform the sampling engine that the model in trainer is updated.
 
         Params:
             trainer: Optionally, replace self.trainer with the provided value.

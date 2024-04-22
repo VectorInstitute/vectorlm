@@ -10,11 +10,11 @@ from vllm.lora.request import LoRARequest
 from vectorlm.trainer import Trainer
 from vectorlm.utils.save_utils import save_peft_adapter
 
-from .abstract import AbstractInferenceEngine
+from .abstract import AbstractSamplingEngine
 
 
-class LoRAInferenceEngine(AbstractInferenceEngine):
-    """Inference engine optimized for inference during LoRA PEFT training."""
+class LoRASamplingEngine(AbstractSamplingEngine):
+    """Sampling engine optimized for LoRA PEFT."""
 
     def __init__(
         self,
@@ -25,7 +25,7 @@ class LoRAInferenceEngine(AbstractInferenceEngine):
         gpu_memory_utilization: float = 0.3,
         adapter_temp_folder: str | None = None,
     ) -> None:
-        """Initialize inference engine.
+        """Initialize sampling engine.
 
         Params:
             trainer: Trainer instance.
@@ -56,7 +56,7 @@ class LoRAInferenceEngine(AbstractInferenceEngine):
 
         assert (
             base_model_name is not None
-        ), "base_model_name is required when instantiating LoRAInferenceEngine."
+        ), "base_model_name is required when instantiating LoRASamplingEngine."
 
         self.vllm_llm = vllm.LLM(
             base_model_name,
@@ -74,7 +74,7 @@ class LoRAInferenceEngine(AbstractInferenceEngine):
         self.update(trainer)
 
     def update(self, trainer: Trainer | None = None) -> None:
-        """Inform the inference engine that the model in trainer is updated.
+        """Inform the sampling engine that the model in trainer is updated.
 
         Params:
             trainer: Optionally, replace self.trainer with the provided value.
@@ -120,7 +120,7 @@ class LoRAInferenceEngine(AbstractInferenceEngine):
 
         """
         if dist.get_rank() != 0:
-            msg = "LoRA inference engine is supported only on rank 0."
+            msg = "LoRA sampling engine is supported only on rank 0."
             raise RuntimeError(msg)
 
         assert self.vllm_train_step is not None
