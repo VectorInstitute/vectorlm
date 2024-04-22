@@ -192,7 +192,7 @@ def get_peft_adapter_tensor_dict(
 
 
 def save_peft_adapter(
-    model: peft.peft_model.PeftModel,
+    model: peft.peft_model.PeftModel | nn.Module,
     output_path: str,
 ) -> None:
     """Save peft adapter to filesystem in a FSDP environment."""
