@@ -67,4 +67,4 @@ At the end of training, a consolidated model will be saved under your output dir
 
 # Contributors
 
-Adil Asif, Ziwen Han, John Willes.
+Adil Asif, Ziwen Han, John Willes, Jacob-Junqi Tian.

@@ -51,9 +51,6 @@ class Trainer:
 
     """
 
-    peft_method: str | None = None
-    is_peft_adapter_restored: bool = False
-
     def __init__(
         self,
         config: Config,
@@ -88,6 +85,9 @@ class Trainer:
         self.max_steps = None
         self.saving_steps = None
         self._post_process(original_dataset_length)
+
+        self.peft_method: str | None = None
+        self.is_peft_adapter_restored: bool = False
 
         if "lora_peft_config" in self.config:
             self.peft_method = peft.utils.peft_types.PeftType.LORA
