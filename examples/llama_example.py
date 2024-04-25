@@ -88,6 +88,7 @@ def main(config: Config) -> None:
         "lora_peft_config",
         None,
     )
+    sampler_config = config.train_parameters.get("sampler")
     is_peft_adapter_restored = False
     if lora_peft_config is not None:
         peft_adapter_path = None
@@ -163,12 +164,13 @@ def main(config: Config) -> None:
     # If no checkpoint, it returns 0.
     checkpointed_epoch = trainer.find_checkpoint(training_args.output_dir)
 
-    if training_args.sampler is not None:
+    if sampler_config is not None:
         sampling_engine = LoRASamplingEngine(
             trainer,
             SamplingParams(seed=0),
             gpu_memory_utilization=0.3,
             base_model_name=config.model,
+            tensor_parallel_size=world_size,
         )
 
     for epoch in range(checkpointed_epoch, training_args.epochs):
@@ -182,7 +184,7 @@ def main(config: Config) -> None:
             trainer.step(batch, epoch)
 
             if (
-                (training_args.sampler is not None)
+                (sampler_config is not None)
                 and (index % training_args.sampler.sample_frequency == 0)
                 and (dist.get_rank() == 0)
             ):
@@ -193,6 +195,7 @@ def main(config: Config) -> None:
                     training_args.sampler.output_jsonl_path,
                     extra_data={"tr_step": trainer.tr_step},
                 )
+            dist.barrier()
 
         if epoch == training_args.epochs - 1:
             hf_save_dir = os.path.join(training_args.output_dir, "final-model")
