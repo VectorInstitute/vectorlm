@@ -51,6 +51,22 @@ Similar to the wandb config above, these keyword parameters are fed directly int
 * `logging_steps`: How often evaluation is run using the evaluation dataset.
 * `save_frequency`: The frequency at which checkpointing occurs. This must be between 0 and 1.
 
+
+### Sampling during Training
+
+To disable sampling during training, delete the entire "sampling" section.
+
+* `sample_frequency`: Number of train steps between two consecutive sampling steps.
+* `output_jsonl_path`: Optional; write sampled output to the specified jsonl file.
+* `prompts`: YAML list of prompt strings.
+
+Each line of the output jsonl file would be a dictionary with keys:
+
+* `tr_step`: number (integer), trainer step when this line was generated.
+* `prompt`: string.
+* `options`: list of strings, one for each possible option that the sampler provided.
+* `time_taken`: float, number of seconds taken to generate **all** prompts at this step.
+
 ## Dataset
 
 * `ignore_index`: The integer index used to ignore a given token in the loss calculation. Cross-entropy loss by default uses `-100`.

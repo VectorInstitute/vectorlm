@@ -271,9 +271,10 @@ def shard_model(
         local_rank: The local rank of the current worker.
         low_cpu_mem_usage: Whether to only load model weights on main rank, and
             then scatter them to the other workers.
-        is_lora_enabled: Whether to enable support for LoRA, where only a subset of
-            parameter tensors requires_grad. Enabling might significantly reduce
-            training throughput, so enable this only when actually using LoRA.
+        is_lora_enabled: Whether to enable support for LoRA, where only a subset
+            of parameter tensors requires_grad. Enabling might significantly
+            reduce training throughput, so enable this only when actually using
+            LoRA.
 
     Returns:
     -------

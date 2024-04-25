@@ -11,8 +11,11 @@ import torch.distributed as dist
 from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import set_seed
+from vllm import SamplingParams
 
 from vectorlm.dataset import Dataset
+from vectorlm.sampling import LoRASamplingEngine
+from vectorlm.sampling.utils import handle_sample
 from vectorlm.trainer import Trainer
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.misc_utils import cleanup, setup, wandb_setup
@@ -27,6 +30,7 @@ from vectorlm.utils.save_utils import (
     checkpoint_exists,
     get_latest_checkpoint_dir,
     save_consolidated_model,
+    save_peft_adapter,
 )
 
 
@@ -159,16 +163,36 @@ def main(config: Config) -> None:
     # If no checkpoint, it returns 0.
     checkpointed_epoch = trainer.find_checkpoint(training_args.output_dir)
 
+    if training_args.sampler is not None:
+        sampling_engine = LoRASamplingEngine(
+            trainer,
+            SamplingParams(seed=0),
+            gpu_memory_utilization=0.3,
+            base_model_name=config.model,
+        )
+
     for epoch in range(checkpointed_epoch, training_args.epochs):
-        trainer.model.train()
         train_dl_iterator = iter(dataset.train_dataloader)
-        for _ in tqdm(
+        for index in tqdm(
             range(len(dataset.train_dataloader)),
             disable=rank != 0,
             file=sys.__stdout__,
         ):
             batch = next(train_dl_iterator)
             trainer.step(batch, epoch)
+
+            if (
+                (training_args.sampler is not None)
+                and (index % training_args.sampler.sample_frequency == 0)
+                and (dist.get_rank() == 0)
+            ):
+                sampling_engine.update(trainer)
+                handle_sample(
+                    sampling_engine,
+                    training_args.sampler.prompts,
+                    training_args.sampler.output_jsonl_path,
+                    extra_data={"tr_step": trainer.tr_step},
+                )
 
         if epoch == training_args.epochs - 1:
             hf_save_dir = os.path.join(training_args.output_dir, "final-model")
@@ -179,7 +203,12 @@ def main(config: Config) -> None:
                 f"epoch_{epoch}",
                 "end-epoch-model",
             )
-        save_consolidated_model(trainer.model, hf_save_dir, rank)
+        # Save base (consolidated) model only when not running peft.
+        if lora_peft_config is None:
+            save_consolidated_model(trainer.model, hf_save_dir, rank)
+        else:
+            save_peft_adapter(trainer.model, hf_save_dir)
+
         dataset.reset_dataloaders()
 
 
