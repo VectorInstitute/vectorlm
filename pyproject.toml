@@ -16,9 +16,18 @@ lint.ignore = [
     "TCH001",
     "E731",
     "PLR0913",
-    "T201"
+    "T201",
+    "INP001"
 ]
 
 [tool.ruff.lint.per-file-ignores]
 # Ignore `F401` (import violations) in all `__init__.py` files.
 "__init__.py" = ["F401", "D104"]
+
+# PyTest fixtures imported from other modules are considered 
+# as "unused". Ignore these in unit test modules.    
+# pytest.mark.usefixtures decorator are not available for fixtures.
+# Some ANN001 instances are ignored in-line. 
+"vectorlm/tests/*" = ["F401", "F811"]
+"profiling/launch_benchmark.py" = ["S603"]
+

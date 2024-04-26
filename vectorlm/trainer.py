@@ -4,13 +4,14 @@ import math
 import os
 from typing import Any
 
+import peft
 import torch
 import torch.distributed as dist
-import wandb
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from transformers import PreTrainedTokenizer
 
+import wandb
 from vectorlm.dataset import Dataset
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.save_utils import (
@@ -21,6 +22,7 @@ from vectorlm.utils.save_utils import (
     load_scheduler,
     save_metadata,
     save_model_and_optimizer,
+    save_peft_adapter,
     save_scheduler,
 )
 
@@ -46,13 +48,15 @@ class Trainer:
         max_steps: An integer maximum number of training steps for this run.
         saving_steps: An integer for how often we save.
 
+
     """
 
-    def __init__(self,
-            config: Config,
-            enable_wandb_logging: bool,
-            original_dataset_length: int,
-        ) -> None:
+    def __init__(
+        self,
+        config: Config,
+        enable_wandb_logging: bool,
+        original_dataset_length: int,
+    ) -> None:
         """Initialize the Trainer class.
 
         Args:
@@ -82,13 +86,20 @@ class Trainer:
         self.saving_steps = None
         self._post_process(original_dataset_length)
 
+        self.peft_method: str | None = None
+        self.is_peft_adapter_restored: bool = False
+
+        if "lora_peft_config" in self.config:
+            self.peft_method = peft.utils.peft_types.PeftType.LORA
+
     def _post_process(self, ds_orig_length: int) -> None:
         """Calculate steps for weight updates and saving."""
         sharded_ds_orig_len = math.ceil(
             ds_orig_length / dist.get_world_size(),
         )
         self.num_update_steps_per_epoch = max(
-            sharded_ds_orig_len // self.gas, 1,
+            sharded_ds_orig_len // self.gas,
+            1,
         )
         self.max_steps = math.ceil(
             self.config.epochs * self.num_update_steps_per_epoch,
@@ -104,6 +115,7 @@ class Trainer:
         dataset: Dataset,
         optimizer: Optimizer,
         lr_scheduler: LRScheduler | ReduceLROnPlateau,
+        is_peft_adapter_restored: bool = False,
     ) -> None:
         """Set all essential training requirements.
 
@@ -115,12 +127,17 @@ class Trainer:
             optimizer: The training optimizer.
             lr_scheduler: The LR scheduler.
 
+            is_peft_adapter_restored: whether peft is enabled and
+                adapters were restored from filesystem.
+
         """
         self.model = model
         self.tokenizer = tokenizer
         self.dataset = dataset
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
+
+        self.is_peft_adapter_restored = is_peft_adapter_restored
 
     def save_checkpoint(self, epoch: int) -> None:
         """Save all states.
@@ -147,8 +164,22 @@ class Trainer:
         )
         if rank == 0:
             save_metadata(save_dir, meta_dict)
-        save_model_and_optimizer(self.optimizer, self.model, save_dir, rank)
+
+        # If peft is enabled, save only the peft adapters
+        # and adapter optimizer state, but not base LLM weights.
+        save_model_and_optimizer(
+            self.optimizer,
+            self.model,
+            save_dir,
+            rank,
+            include_model_state=(self.peft_method is None),
+        )
+
+        if self.peft_method is not None:
+            save_peft_adapter(self.model, save_dir)
+
         save_scheduler(self.lr_scheduler, save_dir, rank)
+
         dist.barrier()
 
     def load_checkpoint(self, checkpoint_dir: str) -> int:
@@ -163,13 +194,26 @@ class Trainer:
         -------
             The checkpointed epoch to be used by the outer loop.
 
+
         """
         rank = dist.get_rank()
         step, epoch, ids = load_metadata(checkpoint_dir)
         self.tr_step = step
         self.dataset.set_processed_ids(ids)
         self.dataset.setup_dataloaders()
-        load_model_and_optimizer(self.optimizer, self.model, checkpoint_dir)
+
+        if self.peft_method is not None:
+            # peft adapters are not restored in this method.
+            # These should have been restored before applying FSDP.
+            assert self.is_peft_adapter_restored
+
+        # Skip overwriting base model weights if peft is enabled.
+        load_model_and_optimizer(
+            self.optimizer,
+            self.model,
+            checkpoint_dir,
+            optimizer_only=self.is_peft_adapter_restored,
+        )
         load_scheduler(self.lr_scheduler, checkpoint_dir, rank)
         dist.barrier()
         return epoch
@@ -185,6 +229,7 @@ class Trainer:
         -------
             The checkpointed epoch. If no checkpoint exists, it returns a
             default value of 0.
+
 
         """
         checkpoint = checkpoint_exists(checkpoint_dir)
@@ -213,13 +258,12 @@ class Trainer:
             train_batch: The training batch.
             epoch: The current training epoch.
 
+
         """
-        if (
-            self.config.checkpointing_enabled
-        ) and (
+        if (self.config.checkpointing_enabled) and (
             (self.tr_step + 1) % self.saving_steps == 0
         ):
-                self.save_checkpoint(epoch)
+            self.save_checkpoint(epoch)
 
         train_loss = self.train_step(train_batch, epoch)
 
@@ -229,7 +273,6 @@ class Trainer:
         self.tr_step += 1
         return train_loss, test_loss
 
-
     def train_step(self, batch: dict[str, torch.Tensor], epoch: int) -> float:
         """Step training once.
 
@@ -237,6 +280,7 @@ class Trainer:
         ----
             batch: The training batch.
             epoch: The current training epoch.
+
 
         """
         ids = batch.pop("id").to(torch.cuda.current_device())
@@ -279,6 +323,7 @@ class Trainer:
         ----
             epoch: The current training epoch.
 
+
         """
         print_main("Evaluating")
         self.model.eval()
@@ -290,6 +335,7 @@ class Trainer:
                 batch["labels"] = batch["labels"].type(torch.LongTensor)
                 out = self.model(**batch)
                 eval_loss += out.loss
+
         gathered_eval_loss = _gather(eval_loss.reshape(1)).mean().item()
         mean_eval_loss = gathered_eval_loss / len(self.dataset.eval_dataloader)
 
@@ -310,6 +356,7 @@ class Trainer:
             loss: The loss being logged.
             epoch: The current training epoch.
             mode: One of `train` or `eval`.
+
 
         """
         if mode not in {"train", "eval"}:
@@ -348,9 +395,7 @@ class Trainer:
 
 
 def _gather(x: torch.Tensor) -> torch.Tensor:
-    output_tensors = [
-        x.clone() for _ in range(dist.get_world_size())
-    ]
+    output_tensors = [x.clone() for _ in range(dist.get_world_size())]
     dist.all_gather(output_tensors, x)
     return torch.cat(output_tensors, dim=0)
 

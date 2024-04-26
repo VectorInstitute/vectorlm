@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 import re
 
+import peft
 import torch
-from torch import distributed as dist
+import torch.distributed as dist
 from torch import nn
 from torch.distributed.checkpoint import (
     DefaultLoadPlanner,
@@ -18,13 +19,14 @@ from torch.distributed.checkpoint.optimizer import (
     load_sharded_optimizer_state_dict,
 )
 from torch.distributed.fsdp import (
-    FullStateDictConfig,  # general model non-sharded, non-flattened params
+    # general model non-sharded, non-flattened params
+    FullStateDictConfig,
     ShardingStrategy,
     StateDictType,
 )
-from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP,
-)
+
+# general model non-sharded, non-flattened params
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.api import ShardedOptimStateDictConfig
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
@@ -87,7 +89,7 @@ def load_metadata(
 
 
 def get_latest_checkpoint_dir(folder_path: str) -> str:
-    """Find the latest checkpoing directory using regex.
+    """Find the latest checkpoint directory using regex.
 
     Args:
     ----
@@ -143,11 +145,44 @@ def save_consolidated_model(
             torch.save(state_dict, save_path)
 
 
+def get_peft_adapter_tensor_dict(
+    model: peft.peft_model.PeftModel,
+) -> dict[str, torch.Tensor] | None:
+    """Return LoRA PEFT Adapter tensor state dict on rank 0.
+
+    Returns None for all other ranks.
+    """
+    with FSDP.state_dict_type(
+        model,
+        StateDictType.FULL_STATE_DICT,
+        FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
+    ):
+        if dist.get_rank() == 0:
+            return peft.utils.save_and_load.get_peft_model_state_dict(model)
+
+        return None
+
+
+def save_peft_adapter(
+    model: peft.peft_model.PeftModel,
+    output_path: str,
+) -> None:
+    """Save peft adapter to filesystem in a FSDP environment."""
+    with FSDP.state_dict_type(
+        model,
+        StateDictType.FULL_STATE_DICT,
+        FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
+    ):
+        if dist.get_rank() == 0:
+            model.save_pretrained(output_path)
+
+
 def save_model_and_optimizer(
     optimizer: Optimizer,
     model: nn.Module,
     output_dir: str,
     rank: int,
+    include_model_state: bool = True,
 ) -> None:
     """Save model and optimizer states.
 
@@ -157,6 +192,10 @@ def save_model_and_optimizer(
         model: The sharded model.
         output_dir: The checkpointing directory.
         rank: The worker's rank.
+        include_model_state: Whether to include full model state dict.
+            If using LoRA, set to False to saves only adapter optimizer state
+            but not base model weights.
+
 
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -168,7 +207,10 @@ def save_model_and_optimizer(
     ):
         state_dict = model.state_dict()
         opt_state = FSDP.sharded_optim_state_dict(model, optimizer)
-        full_state = {"model_state": state_dict, "optim_state": opt_state}
+        full_state = {"optim_state": opt_state}
+        if include_model_state:
+            full_state["model_state"] = state_dict
+
     writer = FileSystemWriter(output_dir, single_file_per_rank=True)
     if _should_save(rank, model.sharding_strategy):
         if rank == 0:
@@ -187,27 +229,33 @@ def load_model_and_optimizer(
     optimizer: Optimizer,
     model: nn.Module,
     input_dir: str,
+    optimizer_only: bool = False,
 ) -> None:
-    """Load the model and optimizer states.
+    """Load optimizer states and model weight, if found.
 
     Args:
     ----
         optimizer: The sharded optimizer.
         model: The sharded model.
         input_dir: The checkpointing directory.
+        optimizer_only: If enabled, load only optimizer state dict but
+            not model parameters. Useful for PEFT where base model
+            does not change.
 
     """
     if dist.get_rank() == 0:
         print(f"Loading states from {input_dir}")
+
     with FSDP.state_dict_type(model, StateDictType.SHARDED_STATE_DICT):
         model_state_dict = model.state_dict()
         checkpoint = {"model_state": model_state_dict}
-        load(
-            state_dict=checkpoint,
-            storage_reader=FileSystemReader(input_dir),
-            planner=DefaultLoadPlanner(),
-        )
-        model.load_state_dict(checkpoint["model_state"])
+        if not optimizer_only:
+            load(
+                state_dict=checkpoint,
+                storage_reader=FileSystemReader(input_dir),
+                planner=DefaultLoadPlanner(),
+            )
+            model.load_state_dict(checkpoint["model_state"])
 
         optim_state = load_sharded_optimizer_state_dict(
             model_state_dict=model.state_dict(),
@@ -215,7 +263,9 @@ def load_model_and_optimizer(
             storage_reader=FileSystemReader(input_dir),
         )
         flattened_osd = FSDP.optim_state_dict_to_load(
-            model, optimizer, optim_state["optim_state"],
+            model,
+            optimizer,
+            optim_state["optim_state"],
         )
         optimizer.load_state_dict(flattened_osd)
     if dist.get_rank() == 0:

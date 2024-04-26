@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import functools
+import re
 from typing import Any, Callable
 
 import torch
 import torch.distributed as dist
-from peft import PeftConfig, PeftModel
+from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
@@ -16,7 +17,11 @@ from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     FullyShardedDataParallel as FSDP,
 )
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+from torch.distributed.fsdp.wrap import (
+    _or_policy,
+    lambda_auto_wrap_policy,
+    transformer_auto_wrap_policy,
+)
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -25,53 +30,46 @@ from transformers import (
 )
 
 
-def load_peft_model_and_tokenizer(
-    path: str,
-    use_mp: bool,
-    use_fa: bool,
-    max_seq_len: int,
-    peft_adapter_path: str,
-    adapter_name: str = "default",
-    is_trainable: bool = False,
-    config: PeftConfig | None = None,
-) -> tuple[PeftModel, PreTrainedTokenizer]:
-    """Load a trained PEFT adapter to the base model and return the PeftModel.
-
-    E.g., a base llama-2-13b-chat-hf w/ adapter named nifty
-    ├── adapters_lora
-        ├── llama-2-13b-chat-hf+nifty
+def get_lora_model_from_base_model(
+    base_model: PreTrainedModel,
+    peft_config_dict: dict[str, Any],
+    path_to_peft_adapter_to_restore: str | None = None,
+) -> PeftModel:
+    """Initialize lora peft configuration from a non-lora model.
 
     Args:
     ----
-        path: The path where the model and tokenizer are stored.
-        use_mp: Whether to use mixed-precision.
-        use_fa: Whether to use Flash Attention 2.
-        max_seq_len: The maximum sequence length.
-        peft_adapter_path: path to the adapter model, e.g.
-            adapters_lora/llama-2-13b-chat-hf+nifty
-        adapter_name: e.g. nifty
-        is_trainable: train or inference mode
-        config: additional configs
+        base_model: HuggingFace Transformer model to wrap.
+        peft_config_dict: configuration from yaml config file.
+        path_to_peft_adapter_to_restore: optionally, initialize peft adapters
+            using tensors loaded from the filesystem.
 
     Returns:
     -------
-        The PEFT model and tokenizer.
+        PeftModel
 
     """
-    model, tokenizer = load_model_and_tokenizer(
-        path,
-        use_mp,
-        use_fa,
-        max_seq_len,
-    )
-    peft_model = PeftModel.from_pretrained(
-        model,
-        peft_adapter_path,
-        adapter_name,
-        is_trainable,
-        config,
-    )
-    return peft_model, tokenizer
+    task_type_str = peft_config_dict["task_type"]
+    task_type = getattr(TaskType, task_type_str)
+    lora_config = LoraConfig(**{**peft_config_dict, "task_type": task_type})
+
+    # See github.com/pytorch/pytorch/pull/102212
+    base_model.load_state_dict(base_model.state_dict(), assign=True)
+
+    if path_to_peft_adapter_to_restore is not None:
+        lora_model = PeftModel.from_pretrained(
+            base_model,
+            path_to_peft_adapter_to_restore,
+            is_trainable=True,
+        )
+        print(f"Restored peft_adapter from {path_to_peft_adapter_to_restore}.")
+    else:
+        lora_model = get_peft_model(base_model, lora_config)
+
+    lora_model = lora_model.bfloat16()
+    assert isinstance(lora_model, PeftModel)
+    lora_model.print_trainable_parameters()
+    return lora_model
 
 
 def load_model_and_tokenizer(
@@ -96,10 +94,12 @@ def load_model_and_tokenizer(
             then scatter them to the other workers.
         use_safetensors: Whether to use HF safe tensors. Note that this format
             loads significantly faster.
+        local_rank: The local rank of the current worker.
 
     Returns:
     -------
         The model and tokenizer.
+
 
     """
     # load model
@@ -140,12 +140,31 @@ def load_model_and_tokenizer(
     return model, tokenizer
 
 
+def lora_requires_grad_policy_fn(module: nn.Module) -> bool:
+    """Policy that "turns off" FSDP Flat Param for LoRA-enabled layers.
+
+    FSDP requires consistent requires_grad for each flat param.
+
+    Since LoRA requires_grad tensors are embedded within each layer,
+    this policy "turns off" FSDP flat param optimization by
+    requiring a separate flat param block for each tensor.
+    """
+    if (
+        len(list(module.named_children())) == 0
+        and getattr(module, "weight", None) is not None
+        and module.weight.requires_grad
+    ):
+        return True
+    return False
+
+
 def fsdp_config(
     use_mp: bool,
     layer_to_wrap: nn.Module,
     strategy: str,
     local_rank: int,
     low_cpu_mem_usage: bool,
+    is_lora_enabled: bool = False,
 ) -> dict[str, Any]:
     """Get FSDP config.
 
@@ -157,6 +176,7 @@ def fsdp_config(
         local_rank: The local rank of the current worker.
         low_cpu_mem_usage: Whether to only load model weights on main rank, and
             then scatter them to the other workers.
+        is_lora_enabled: Whether to enable LoRA support.
 
     Returns:
     -------
@@ -185,10 +205,24 @@ def fsdp_config(
         )
         ret_dict["mixed_precision"] = mp_policy
 
-    auto_wrap_policy = functools.partial(
+    transformer_wrap_policy = functools.partial(
         transformer_auto_wrap_policy,
         transformer_layer_cls={layer_to_wrap},
     )
+
+    if is_lora_enabled:
+        # turns off FSDP Flat Param in LoRA layers.
+        lambda_requires_grad_policy = functools.partial(
+            lambda_auto_wrap_policy,
+            lambda_fn=lora_requires_grad_policy_fn,
+        )
+        auto_wrap_policy = functools.partial(
+            _or_policy,
+            policies=[lambda_requires_grad_policy, transformer_wrap_policy],
+        )
+    else:
+        auto_wrap_policy = transformer_wrap_policy
+
     sharding_strategy = getattr(ShardingStrategy, strategy)
 
     ret_dict["auto_wrap_policy"] = auto_wrap_policy
@@ -203,12 +237,13 @@ def fsdp_config(
 
 def shard_model(
     model: nn.Module,
-    layer_to_wrap: nn.Module,
+    layer_to_wrap: type[nn.Module],
     use_mp: bool,
     use_activation_checkpointing: bool,
     strategy: str,
     local_rank: int,
     low_cpu_mem_usage: bool,
+    is_lora_enabled: bool = False,
 ) -> nn.Module:
     """Shard the model to workers using FSDP.
 
@@ -222,6 +257,10 @@ def shard_model(
         local_rank: The local rank of the current worker.
         low_cpu_mem_usage: Whether to only load model weights on main rank, and
             then scatter them to the other workers.
+        is_lora_enabled: Whether to enable support for LoRA, where requires_grad
+            is True for only a subset of parameter tensors. Enabling might
+            significantly reduce training throughput, so enable this only when
+            actually using LoRA.
 
     Returns:
     -------
@@ -229,7 +268,12 @@ def shard_model(
 
     """
     fsdp_cfg = fsdp_config(
-        use_mp, layer_to_wrap, strategy, local_rank, low_cpu_mem_usage,
+        use_mp,
+        layer_to_wrap,
+        strategy,
+        local_rank,
+        low_cpu_mem_usage,
+        is_lora_enabled,
     )
     if dist.get_rank() == 0:
         print(f"FSDP config: {fsdp_cfg}")
@@ -246,7 +290,7 @@ def shard_model(
 
 def hook_activation_checkpointing(
     model: nn.Module,
-    layer: nn.Module,
+    layer: type[nn.Module],
 ) -> None:
     """Set activation checkpointing.
 
@@ -264,5 +308,44 @@ def hook_activation_checkpointing(
     check_fn = lambda submodule: isinstance(submodule, layer)
 
     apply_activation_checkpointing(
-        model, checkpoint_wrapper_fn=non_reentrant_wrapper, check_fn=check_fn,
+        model,
+        checkpoint_wrapper_fn=non_reentrant_wrapper,
+        check_fn=check_fn,
     )
+
+
+def get_submodule_by_pattern(
+    module: nn.Module,
+    pattern: str,
+) -> type[nn.Module] | None:
+    """Return the first module.cls that matches pattern at least partially.
+
+    With reference to get_module_class_from_name from HuggingFace
+    accelerate `FullyShardedDataParallelPlugin`.
+
+    Args:
+    ----
+        module: Layer container
+        pattern: regular expression string.
+
+    Returns:
+    -------
+        nn.Module: matched layer (nn.Module),
+        or
+        None: if not matched.
+
+    """
+    modules_children = list(module.children())
+    module_name = module.__class__.__name__
+    if re.search(pattern, module_name) is not None:
+        return module.__class__
+
+    if len(modules_children) == 0:
+        return None
+
+    for child_module in modules_children:
+        module_class = get_submodule_by_pattern(child_module, pattern)
+        if module_class is not None:
+            return module_class
+
+    return None

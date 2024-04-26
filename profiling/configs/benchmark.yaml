@@ -1,13 +1,12 @@
-model: /model-weights/Llama-2-7b-chat-hf/
 enable_wandb_logging: True
 
 wandb_config:
-  project: MedGPT
-  name: Llama-2-7B-chat
+  project: vector-lm-verify
+  name: benchmark-lora
 
 train_parameters:
-  output_dir: your/output/dir
-  max_seq_len: 4096
+  output_dir: /dev/shm/lora-benchmark
+  max_seq_len: 128
   epochs: 1
   seed: 11
 
@@ -17,18 +16,9 @@ train_parameters:
   # Memory
   use_mp: True
   use_activation_checkpointing: True
-  use_flash_attention: True
+  # use_flash_attention is automatically enabled 
+  # for CUDA capability > 8.0
   low_cpu_mem_usage: True
-
-  # LoRA config: uncomment the block below to enable LoRA
-  
-  # lora_peft_config:
-  #   task_type: CAUSAL_LM
-  #   inference_mode: False
-  #   r: 8
-  #   lora_alpha: 32
-  #   lora_dropout: 0.1
-
 
   # Gradient norm clipping
   max_grad_norm: 1
@@ -54,17 +44,17 @@ dataset:
   ignore_index: -100
   eval_bs: 8
   train_bs: 8
-  train_ds: your/train/ds
-  eval_ds: your/eval/ds
+  train_ds: /dev/null
+  eval_ds: /dev/null
 
 dataset_preprocess:
   ignore_index: -100
   dataset_format: hf
-  data_field: text
+  data_field: question
   packing_type: partial
   add_bos_eos_tokens: True
   from_disk: True
-  load_path: your/unprocessed/dataset
+  load_path: data/raw/gsm8k
   split: train
-  save_path: dir/to/save/processed/dataset
+  save_path: data/processed/gsm8k-question/train
   truncate: False

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import math
 import os
@@ -9,15 +11,24 @@ import torch.distributed as dist
 from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import set_seed
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
 from vectorlm.dataset import Dataset
 from vectorlm.trainer import Trainer
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.misc_utils import cleanup, setup, wandb_setup
-from vectorlm.utils.model_utils import load_model_and_tokenizer, shard_model
+from vectorlm.utils.model_utils import (
+    get_lora_model_from_base_model,
+    get_submodule_by_pattern,
+    load_model_and_tokenizer,
+    shard_model,
+)
 from vectorlm.utils.optimizer_utils import get_custom_scheduler
-from vectorlm.utils.save_utils import save_consolidated_model
+from vectorlm.utils.save_utils import (
+    checkpoint_exists,
+    get_latest_checkpoint_dir,
+    save_consolidated_model,
+    save_peft_adapter,
+)
 
 
 def parse_args() -> Namespace:
@@ -30,7 +41,9 @@ def parse_args() -> Namespace:
     """
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--yaml_path", default="configs/config.yaml", required=False,
+        "--yaml_path",
+        default="configs/config.yaml",
+        required=False,
     )
     return parser.parse_args()
 
@@ -67,14 +80,40 @@ def main(config: Config) -> None:
         training_args.low_cpu_mem_usage,
     )
 
+    lora_peft_config = config.train_parameters.get("lora_peft_config")
+    is_peft_adapter_restored = False
+    is_lora_enabled = False
+    if lora_peft_config is not None:
+        is_lora_enabled = True
+        peft_adapter_path = None
+        # Restore peft adapter from filesystem if available.
+        if checkpoint_exists(training_args.output_dir):
+            peft_adapter_path = os.path.join(
+                training_args.output_dir,
+                "checkpoints",
+                get_latest_checkpoint_dir(
+                    os.path.join(training_args.output_dir, "checkpoints"),
+                ),
+            )
+            is_peft_adapter_restored = True
+
+        model = get_lora_model_from_base_model(
+            model,
+            lora_peft_config,
+            peft_adapter_path,
+        )
+
+    decoder_layer_module = get_submodule_by_pattern(model, r"DecoderLayer$")
+    assert decoder_layer_module is not None, f"No DecoderLayer found in {model}"
     model = shard_model(
         model,
-        LlamaDecoderLayer,
+        decoder_layer_module,
         training_args.use_mp,
         training_args.use_activation_checkpointing,
         training_args.sharding_strategy,
         local_rank,
         training_args.low_cpu_mem_usage,
+        is_lora_enabled,
     )
 
     # load dataset
@@ -112,6 +151,7 @@ def main(config: Config) -> None:
         dataset,
         optimizer,
         lr_scheduler,
+        is_peft_adapter_restored,
     )
 
     # Checkpoint check. Always call before training.
@@ -138,8 +178,13 @@ def main(config: Config) -> None:
                 f"epoch_{epoch}",
                 "end-epoch-model",
             )
-        save_consolidated_model(trainer.model, hf_save_dir, rank)
+
+        if is_lora_enabled:
+            save_peft_adapter(trainer.model, hf_save_dir)
+        else:
+            save_consolidated_model(trainer.model, hf_save_dir, rank)
         dataset.reset_dataloaders()
+
 
 if __name__ == "__main__":
     args = parse_args()

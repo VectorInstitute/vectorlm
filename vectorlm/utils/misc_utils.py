@@ -4,15 +4,16 @@ import os
 from typing import Any
 
 import torch.distributed as dist
-import wandb
 
+import wandb
 from vectorlm.utils.data_utils import Config
 
 
 def setup(final_model_dir: str) -> None:
     """Initialize the process group and create directories."""
     os.makedirs(
-        os.path.join(final_model_dir, "final-model"), exist_ok=True,
+        os.path.join(final_model_dir, "final-model"),
+        exist_ok=True,
     )
     dist.init_process_group("nccl")
 

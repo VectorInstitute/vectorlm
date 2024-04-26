@@ -5,3 +5,8 @@
 __pycache__/
 wandb/
 build/
+data/
+**/*.pyc
+/.cache
+/.vscode
+/data

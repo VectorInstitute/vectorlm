@@ -7,8 +7,8 @@ from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from transformers import get_scheduler
 
 
-class PlateaeuWithWarmup(ReduceLROnPlateau):
-    """Class to implement plataeu scheduling with warmup.
+class PlateauWithWarmup(ReduceLROnPlateau):
+    """Class to implement plateau scheduling with warmup.
 
     Attributes
     ----------
@@ -47,7 +47,7 @@ class PlateaeuWithWarmup(ReduceLROnPlateau):
         verbose: bool = False,
         num_warmup_steps: int = 0,
     ) -> None:
-        """Initialize the PlateaeuWithWarmup scheduler class.
+        """Initialize the PlateauWithWarmup scheduler class.
 
         Arguments:
         ---------
@@ -168,8 +168,8 @@ def get_custom_scheduler(
         The scheduler.
 
     """
-    if name == "plataeu-with-warmup":
-        scheduler = PlateaeuWithWarmup(*args, **kwargs)
+    if name == "plateau-with-warmup":
+        scheduler = PlateauWithWarmup(*args, **kwargs)
         # required, otherwise the very first step the optimizer takes is at the
         # maximum set LR (because we step the scheduler *after* we step the
         # optimizer. As a result, the optimizer is set to max LR on the first
