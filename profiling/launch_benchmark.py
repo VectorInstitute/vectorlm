@@ -25,6 +25,7 @@ model_list = [
         "opt-350m",
         "gemma-2b",
         "Llama-2-7b-hf",
+        "Meta-Llama-3-8B",
         "Llama-2-13b-hf",
         "Mistral-7B-v0.1",
         "Mixtral-8x7B-Instruct-v0.1",
@@ -37,8 +38,8 @@ config_list = [
 ]
 
 # Set to (-1) to fall back to the max context length of the pre-trained model.
-max_length_list = [1024, 2048, 4096, -1]
-batch_size = [8, 16, 32, 64, 128]
+max_length_list = [1024, 2048, -1]
+batch_size = [8, 32, 128]
 
 slurm_flags_options = {
     "nodes": [1],

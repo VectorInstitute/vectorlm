@@ -366,6 +366,10 @@ if __name__ == "__main__":
             max_length=args.max_length,
         )
 
+        print(
+            f"Sequence length: {dataset.max_length};"
+            f"Batch Size: {args.training_batch_size}",
+        )
         write_metrics("max_length", dataset.max_length)
 
     # instantiate trainer
