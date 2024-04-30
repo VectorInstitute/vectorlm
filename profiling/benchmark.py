@@ -314,17 +314,18 @@ if __name__ == "__main__":
 
     # load model and tokenizer
     lora_peft_config = config.train_parameters.get("lora_peft_config")
+    is_lora_enabled = lora_peft_config is not None
 
     with track_time("model_load"):
         model, tokenizer = load_model_and_tokenizer(
             args.model_name,
             training_args.use_mp,
             get_is_flash_attention_supported(),
-            training_args.max_seq_len,
+            args.max_length,
             local_rank,
             training_args.low_cpu_mem_usage,
         )
-        if lora_peft_config is not None:
+        if is_lora_enabled:
             print("Enabling LoRA Wrapper.")
             write_metrics("peft_method", "lora")
             model = get_lora_model_from_base_model(model, lora_peft_config)
@@ -348,6 +349,7 @@ if __name__ == "__main__":
             training_args.sharding_strategy,
             local_rank,
             training_args.low_cpu_mem_usage,
+            is_lora_enabled=is_lora_enabled,
         )
 
     with track_time("set_activation_checkpointing"):
@@ -371,7 +373,6 @@ if __name__ == "__main__":
         config=training_args,
         enable_wandb_logging=config.enable_wandb_logging,
         original_dataset_length=dataset.original_length,
-        timer_handle=track_time,
     )
 
     # load optimizer
@@ -412,7 +413,7 @@ if __name__ == "__main__":
             trainer.model.train()
             train_dl_iterator = iter(dataset.train_dataloader)
             for _ in tqdm(
-                range(args.num_train_examples),
+                range(len(dataset.train_dataloader)),
                 disable=rank != 0,
                 file=sys.__stdout__,
             ):
