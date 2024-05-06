@@ -31,6 +31,8 @@ from vllm.utils import (
 from vllm.worker.worker import init_worker_distributed_environment
 
 if TYPE_CHECKING:
+    from threading import Barrier
+
     from vllm.engine.arg_utils import EngineConfig
 
 from .abstract import AbstractSamplingEngine
@@ -47,6 +49,26 @@ class SampleOutput(NamedTuple):
     prompt: str
     options: list[str]
     time_taken: float
+
+
+class SynchronizationBarriers(NamedTuple):
+    """Barriers for limiting GPU access concurrency.
+
+    Params:
+        vllm_init: Barrier to Ensures that vLLM engine is fully initialized
+            before running any vectorlm logic.
+
+        before_generation: Ensure all processes have reached this statement,
+            or vectorlm in some processes might still be accessing the
+            accelerator when rank 0 invokes vLLM.
+
+        after_generation: Detain all processes until after rank 0 is sure that
+            there are no outstanding vLLM jobs.
+    """
+
+    vllm_init: Barrier
+    before_generation: Barrier
+    after_generation: Barrier
 
 
 def _ensure_torch_dist_is_initialized() -> None:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import math
 import os
 import sys
@@ -35,7 +34,9 @@ from vectorlm.utils.save_utils import (
 if TYPE_CHECKING:
     from threading import Barrier
 
-    from vllm import LLM
+    from vllm import LLM, RequestOutput
+
+    from vectorlm.sampling.utils import SynchronizationBarriers
 
 
 def parse_args() -> Namespace:
@@ -59,14 +60,24 @@ def main(
     config: Config,
     local_rank: int | None = None,
     world_size: int | None = None,
-    vllm_init_barrier: Barrier | None = None,
-    get_vllm_engine: Callable[[], LLM] | None = None,
+    barriers: SynchronizationBarriers | None = None,
+    get_vllm_llm: Callable[[], LLM] | None = None,
 ) -> None:
-    """Define the main calling function."""
-    if vllm_init_barrier is not None:
-        # Wait until vllm engine is ready.
+    """Define the main calling function.
+
+    Args:
+    ----
+        config: vectorlm config, e.g., loaded from yaml
+        local_rank: int, where 0 is root process, one process per accelerator.
+        world_size: number of processes.
+        barriers: SynchronizationBarriers, required for all processes.
+        get_vllm_llm: required only for root process (rank 0).
+
+    """
+    if barriers is not None:
+        # Wait until vllm engine is fully initialized.
         print(f"rank {local_rank} vllm_init_barrier wait")
-        vllm_init_barrier.wait()
+        barriers.vllm_init.wait()
         print(f"rank {local_rank} vllm_init_barrier cleared")
 
     training_args = config.train_parameters
@@ -144,10 +155,6 @@ def main(
         is_lora_enabled=(lora_peft_config is not None),
     )
 
-    if vllm_init_barrier is not None:
-        vllm_init_barrier.wait()
-        vllm_init_barrier.wait()
-
     # load dataset
     dataset = Dataset(
         config=config.dataset,
@@ -190,16 +197,6 @@ def main(
     # If no checkpoint, it returns 0.
     checkpointed_epoch = trainer.find_checkpoint(training_args.output_dir)
 
-    if sampler_config is not None:
-        if dist.get_rank() == 0:
-            assert get_vllm_engine is not None
-            vllm_llm = get_vllm_engine()
-            output = vllm_llm.generate("Vector Institute is")
-            print(output)
-
-        print(f"rank {rank}: llm.generate barrier")
-        dist.barrier()
-
     for epoch in range(checkpointed_epoch, training_args.epochs):
         train_dl_iterator = iter(dataset.train_dataloader)
         for index in tqdm(
@@ -210,13 +207,21 @@ def main(
             batch = next(train_dl_iterator)
             trainer.step(batch, epoch)
 
-            if (
-                (sampler_config is not None)
-                and (index % training_args.sampler.sample_frequency == 0)
-                and (dist.get_rank() == 0)
+            if (sampler_config is not None) and (
+                index % training_args.sampler.sample_frequency == 0
             ):
-                output = vllm_llm.generate(training_args.sampler.prompts[0])
-                print(output)
+                assert barriers is not None
+                barriers.before_generation.wait()
+
+                if dist.get_rank() == 0:
+                    assert get_vllm_llm is not None
+                    # the line below should block until vllm finishes running.
+                    output = get_vllm_llm().generate(
+                        training_args.sampler.prompts,
+                    )
+                    print(output)
+
+                barriers.after_generation.wait()
 
             dist.barrier()
 
