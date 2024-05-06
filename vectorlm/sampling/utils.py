@@ -3,10 +3,36 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 import time
-from typing import Any, Iterable, NamedTuple
+from collections import Counter
+from functools import partial
+from typing import TYPE_CHECKING, Any, Callable, Iterable, NamedTuple
 
-from vllm import SamplingParams
+if TYPE_CHECKING:
+    from vllm import LLMEngine
+    from vllm.worker.worker_base import WorkerBase
+
+from vllm import LLM, SamplingParams
+from vllm.engine.local_worker_utils import (
+    LocalWorkerVllm,
+    ResultHandler,
+    WorkerMonitor,
+)
+from vllm.executor.multiproc_gpu_executor import (
+    MultiProcGPUExecutor,
+    _create_worker,
+)
+from vllm.utils import get_distributed_init_method, set_cuda_visible_devices
+from vllm.worker.worker import init_worker_distributed_environment
+
+if TYPE_CHECKING:
+    from threading import Barrier
+
+    from vllm.engine.arg_utils import EngineConfig
+
+    from vectorlm.utils import Config
 
 from .abstract import AbstractSamplingEngine
 
@@ -22,6 +48,97 @@ class SampleOutput(NamedTuple):
     prompt: str
     options: list[str]
     time_taken: float
+
+
+def _ensure_torch_dist_is_initialized() -> None:
+    import torch.distributed
+
+    assert torch.distributed.is_initialized()
+
+
+def _get_rdvz_url() -> str:
+    """Obtain rendezvous url for Torch dist."""
+    return get_distributed_init_method(
+        os.environ.get("MASTER_ADDR", "127.0.0.1"),
+        int(os.environ["MASTER_PORT"]),
+    )
+
+
+class ManagedMultiProcGPUExecutor(MultiProcGPUExecutor):
+    """MultiProcGPUExecutor, but with worker processes instantiated outside."""
+
+    workers: tuple[LocalWorkerVllm, ...] | None = None
+    vectorlm_main_fn: Callable[[], None] | None = None
+    vectorlm_dist_init_barrier: Barrier | None = None
+
+    def _init_executor(self) -> None:
+        """Initialize executor without initializing workers.
+
+        Same as MultiProcGPUExecutor but assumes self.workers is already set.
+
+        Mostly reproduced from
+        vllm/vllm-ray-optional/vllm/executor/multiproc_gpu_executor.py
+        """
+        assert (
+            not self.speculative_config
+        ), "Speculative decoding not yet supported for MultiProcGPU backend."
+
+        # Create the parallel GPU workers.
+        world_size = self.parallel_config.tensor_parallel_size
+        assert self.workers is not None
+        assert len(self.workers) == world_size - 1, (
+            f"non-driver workers len(self.workers): {len(self.workers)} "
+            f"should be (world_size - 1) {world_size - 1}"
+        )
+
+        if "CUDA_VISIBLE_DEVICES" not in os.environ:
+            set_cuda_visible_devices(range(world_size))
+
+        from torch.cuda import device_count
+
+        assert (
+            world_size <= device_count()
+        ), "please set tensor_parallel_size to less than max local gpu count"
+
+        result_handler = ResultHandler()
+        self.worker_monitor = WorkerMonitor(
+            list(self.workers),
+            result_handler,
+        )
+        result_handler.start()
+        self.worker_monitor.start()
+
+        distributed_init_method = _get_rdvz_url()
+
+        # driver worker is of rank 0
+        print("driver worker: init_worker_dist started")
+        init_worker_distributed_environment(
+            self.parallel_config,
+            0,
+            distributed_init_method,
+            0,
+        )
+        print("driver worker: init_worker_dist completed")
+        _ensure_torch_dist_is_initialized()
+
+        # start vectorlm logic in the same Python process
+        # (albeit in a separate thread)
+        vectorlm_thread = threading.Thread(
+            target=self.vectorlm_main_fn,
+            name="driver/vectorlm",
+        )
+        vectorlm_thread.start()
+
+        self._init_driver_worker_and_model(0, 0, distributed_init_method)
+
+
+class ManagedLLM(LLM):
+    """vllm.entrypoints.LLM but using an externally-initialized LLM Engine."""
+
+    def __init__(self, llm_engine: LLMEngine) -> None:
+        """Instantiate LLM instance using externally-initialized LLM Engine."""
+        self.llm_engine = llm_engine
+        self.request_counter = Counter()
 
 
 def handle_sample(
@@ -74,3 +191,25 @@ def handle_sample(
             output_jsonl_file.write("\n".join(jsonl_output_lines) + "\n\n")
 
     return sample_outputs
+
+
+def get_vllm_worker_factory(
+    engine_config: EngineConfig,
+    distributed_init_method: str,
+    rank: int,
+) -> Callable[[], WorkerBase]:
+    """Initialize vLLM worker."""
+    return partial(
+        _create_worker,
+        model_config=engine_config.model_config,
+        parallel_config=engine_config.parallel_config,
+        scheduler_config=engine_config.scheduler_config,
+        device_config=engine_config.device_config,
+        cache_config=engine_config.cache_config,
+        local_rank=rank,
+        rank=rank,
+        distributed_init_method=distributed_init_method,
+        lora_config=engine_config.lora_config,
+        vision_language_config=engine_config.vision_language_config,
+        tensorizer_config=engine_config.tensorizer_config,
+    )

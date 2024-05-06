@@ -50,7 +50,7 @@ slurm_flags_options = {
 }
 
 num_repeats = 2
-slurm_flags_extra = {"time": "01:00:00", "qos": qos_selected}
+slurm_flags_extra = {"time": "02:00:00", "qos": qos_selected}
 
 slurm_pos_args_options = [
     ["profiling/launch_benchmark.sh"],
