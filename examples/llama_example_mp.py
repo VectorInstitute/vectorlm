@@ -11,6 +11,9 @@ To do so without duplicating vLLM code, observe that only the main process
 setup is to block the vectorlm thread with a multiprocessing synchronization
 feature (e.g., a Barrier shared across all processes) that the rank 0 process
 can remotely unblock.
+
+Edit: It seems that vllm.entrypoint.llm.LLM generate calls aren't
+entirely blocking.
 """
 
 from __future__ import annotations
@@ -80,6 +83,7 @@ class _VLLMCallbackWrapper:
             0,
             world_size,
             self.vllm_init_barrier,
+            self.get_engine,
         )
 
     def initialize_engine(self) -> None:
@@ -98,20 +102,21 @@ class _VLLMCallbackWrapper:
             executor_class=ManagedMultiProcGPUExecutor,
             log_stats=False,
         )
-        print("main: vllm_init_barrier waiting")
-        self.vllm_init_barrier.wait()
-        print("main: vllm_init_barrier cleared")
 
         self.llm = ManagedLLM(self.llm_engine)
         print(f"Instantiated ManagedLLM: {self.llm}")
 
-    def get_engine(self) -> None:
+    def get_engine(self) -> LLM:
         """Return LLM instance.
 
         Invoke this method only within the main (rank 0 driver) process.
         """
         if self.llm is None:
             self.initialize_engine()
+
+        llm = self.llm
+        assert llm is not None
+        return llm
 
     def join_vectorlm_thread(self) -> None:
         """Join the rank 0 (main process) vectorlm thread.
@@ -250,6 +255,12 @@ if __name__ == "__main__":
 
     vllm_callback_wrapper.initialize_engine()
     assert vllm_callback_wrapper.llm is not None
+    print("main: vllm_init_barrier waiting")
+    vllm_init_barrier.wait()
+    print("main: vllm_init_barrier cleared")
+
+    vllm_init_barrier.wait()
+
     output = vllm_callback_wrapper.llm.generate("Vector Institute is")
     print(output)
 

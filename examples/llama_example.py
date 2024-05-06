@@ -35,6 +35,8 @@ from vectorlm.utils.save_utils import (
 if TYPE_CHECKING:
     from threading import Barrier
 
+    from vllm import LLM
+
 
 def parse_args() -> Namespace:
     """Parse command-line arguments.
@@ -58,7 +60,7 @@ def main(
     local_rank: int | None = None,
     world_size: int | None = None,
     vllm_init_barrier: Barrier | None = None,
-    vllm_init_callback: Callable[[], None] | None = None,
+    get_vllm_engine: Callable[[], LLM] | None = None,
 ) -> None:
     """Define the main calling function."""
     if vllm_init_barrier is not None:
@@ -68,9 +70,14 @@ def main(
         print(f"rank {local_rank} vllm_init_barrier cleared")
 
     training_args = config.train_parameters
+    sampler_config = training_args.get("sampler")
 
     # set a seed
     set_seed(training_args.seed)
+
+    if dist.is_initialized():
+        torch.cuda.set_device(local_rank)
+        torch.cuda.empty_cache()
 
     # set CUDA related dependencies
     if (local_rank is None) or (world_size is None):
@@ -83,15 +90,7 @@ def main(
         os.environ["RANK"] = str(local_rank)
         os.environ["WORLD_SIZE"] = str(world_size)
 
-        logging.info(
-            "dist.init_process_group",
-            extra={"local_rank": local_rank, "world_size": world_size},
-        )
-
     print(f"Rank: {rank}, World size: {world_size}")
-    if dist.is_initialized():
-        torch.cuda.set_device(local_rank)
-        torch.cuda.empty_cache()
 
     # setup wandb
     if rank == 0:
@@ -112,7 +111,6 @@ def main(
         "lora_peft_config",
         None,
     )
-    sampler_config = config.train_parameters.get("sampler")
     is_peft_adapter_restored = False
     if lora_peft_config is not None:
         peft_adapter_path = None
@@ -145,6 +143,10 @@ def main(
         training_args.low_cpu_mem_usage,
         is_lora_enabled=(lora_peft_config is not None),
     )
+
+    if vllm_init_barrier is not None:
+        vllm_init_barrier.wait()
+        vllm_init_barrier.wait()
 
     # load dataset
     dataset = Dataset(
@@ -188,6 +190,16 @@ def main(
     # If no checkpoint, it returns 0.
     checkpointed_epoch = trainer.find_checkpoint(training_args.output_dir)
 
+    if sampler_config is not None:
+        if dist.get_rank() == 0:
+            assert get_vllm_engine is not None
+            vllm_llm = get_vllm_engine()
+            output = vllm_llm.generate("Vector Institute is")
+            print(output)
+
+        print(f"rank {rank}: llm.generate barrier")
+        dist.barrier()
+
     for epoch in range(checkpointed_epoch, training_args.epochs):
         train_dl_iterator = iter(dataset.train_dataloader)
         for index in tqdm(
@@ -198,15 +210,15 @@ def main(
             batch = next(train_dl_iterator)
             trainer.step(batch, epoch)
 
-            # if (
-            #     (sampler_config is not None)
-            #     and (index % training_args.sampler.sample_frequency == 0)
-            #     and (dist.get_rank() == 0)
-            # ):
-            #     output = vllm_llm.generate(training_args.sampler.prompts)
-            #     print(output)
+            if (
+                (sampler_config is not None)
+                and (index % training_args.sampler.sample_frequency == 0)
+                and (dist.get_rank() == 0)
+            ):
+                output = vllm_llm.generate(training_args.sampler.prompts[0])
+                print(output)
 
-            # dist.barrier()
+            dist.barrier()
 
         if epoch == training_args.epochs - 1:
             hf_save_dir = os.path.join(training_args.output_dir, "final-model")
