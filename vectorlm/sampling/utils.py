@@ -6,7 +6,6 @@ import json
 import os
 import threading
 import time
-from collections import Counter
 from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Iterable, NamedTuple
 
@@ -24,15 +23,15 @@ from vllm.executor.multiproc_gpu_executor import (
     MultiProcGPUExecutor,
     _create_worker,
 )
-from vllm.utils import get_distributed_init_method, set_cuda_visible_devices
+from vllm.utils import (
+    Counter,
+    get_distributed_init_method,
+    set_cuda_visible_devices,
+)
 from vllm.worker.worker import init_worker_distributed_environment
 
 if TYPE_CHECKING:
-    from threading import Barrier
-
     from vllm.engine.arg_utils import EngineConfig
-
-    from vectorlm.utils import Config
 
 from .abstract import AbstractSamplingEngine
 
@@ -69,7 +68,7 @@ class ManagedMultiProcGPUExecutor(MultiProcGPUExecutor):
 
     workers: tuple[LocalWorkerVllm, ...] | None = None
     vectorlm_main_fn: Callable[[], None] | None = None
-    vectorlm_dist_init_barrier: Barrier | None = None
+    result_handler: ResultHandler | None = None
 
     def _init_executor(self) -> None:
         """Initialize executor without initializing workers.
@@ -100,12 +99,12 @@ class ManagedMultiProcGPUExecutor(MultiProcGPUExecutor):
             world_size <= device_count()
         ), "please set tensor_parallel_size to less than max local gpu count"
 
-        result_handler = ResultHandler()
+        assert self.result_handler is not None
         self.worker_monitor = WorkerMonitor(
             list(self.workers),
-            result_handler,
+            self.result_handler,
         )
-        result_handler.start()
+        self.result_handler.start()
         self.worker_monitor.start()
 
         distributed_init_method = _get_rdvz_url()
@@ -123,11 +122,11 @@ class ManagedMultiProcGPUExecutor(MultiProcGPUExecutor):
 
         # start vectorlm logic in the same Python process
         # (albeit in a separate thread)
-        vectorlm_thread = threading.Thread(
+        self.vectorlm_thread = threading.Thread(
             target=self.vectorlm_main_fn,
             name="driver/vectorlm",
         )
-        vectorlm_thread.start()
+        self.vectorlm_thread.start()
 
         self._init_driver_worker_and_model(0, 0, distributed_init_method)
 

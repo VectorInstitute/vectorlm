@@ -6,8 +6,7 @@ import math
 import os
 import sys
 from argparse import Namespace
-from threading import Barrier
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import torch
 import torch.distributed as dist
@@ -33,6 +32,9 @@ from vectorlm.utils.save_utils import (
     save_peft_adapter,
 )
 
+if TYPE_CHECKING:
+    from threading import Barrier
+
 
 def parse_args() -> Namespace:
     """Parse command-line arguments.
@@ -55,10 +57,16 @@ def main(
     config: Config,
     local_rank: int | None = None,
     world_size: int | None = None,
-    dist_init_barrier: Barrier | None = None,
+    vllm_init_barrier: Barrier | None = None,
     vllm_init_callback: Callable[[], None] | None = None,
 ) -> None:
     """Define the main calling function."""
+    if vllm_init_barrier is not None:
+        # Wait until vllm engine is ready.
+        print(f"rank {local_rank} vllm_init_barrier wait")
+        vllm_init_barrier.wait()
+        print(f"rank {local_rank} vllm_init_barrier cleared")
+
     training_args = config.train_parameters
 
     # set a seed
