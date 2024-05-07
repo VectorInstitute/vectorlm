@@ -201,8 +201,7 @@ def save_peft_adapter(
         StateDictType.FULL_STATE_DICT,
         FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
     ):
-        if dist.get_rank() == 0:
-            model.save_pretrained(output_path)
+        model.save_pretrained(output_path)
 
 
 def save_optimizer(

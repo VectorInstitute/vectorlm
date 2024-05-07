@@ -11,6 +11,7 @@ from vectorlm.trainer import Trainer
 from vectorlm.utils.save_utils import save_peft_adapter
 
 from .abstract import AbstractSamplingEngine
+from .utils import SynchronizationBarriers
 
 
 class LoRASamplingEngine(AbstractSamplingEngine):
@@ -19,26 +20,22 @@ class LoRASamplingEngine(AbstractSamplingEngine):
     def __init__(
         self,
         trainer: Trainer,
+        vllm_llm: vllm.LLM | None = None,
         sampling_params: vllm.SamplingParams | None = None,
-        base_model_name: str | None = None,
-        tensor_parallel_size: int = 1,
-        gpu_memory_utilization: float = 0.3,
+        synchronization_barriers: SynchronizationBarriers | None = None,
         adapter_temp_folder: str | None = None,
     ) -> None:
         """Initialize sampling engine.
 
         Params:
             trainer: Trainer instance.
+            vllm_llm: Instance of vllm.LLM, required only for rank 0.
             sampling_params: Optionally, specify default sampling params.
-            base_model_name: Path or HuggingFace repo name of base model.
-            tensor_parallel_size: Forwarded to vllm.LLM.
-            gpu_memory_utilization: Forwarded to vllm.LLM.
             adapter_temp_folder: Temporary path where temporary adapter weights
               are saved. If not specified, f`/dev/shm/{job_id}`
         """
-        if dist.get_rank() != 0:
-            return
-
+        assert synchronization_barriers is not None
+        self.barriers = synchronization_barriers
         self.sampling_params = sampling_params
 
         if adapter_temp_folder is not None:
@@ -54,18 +51,12 @@ class LoRASamplingEngine(AbstractSamplingEngine):
                 slurm_job_id_or_placeholder,
             )
 
-        assert (
-            base_model_name is not None
-        ), "base_model_name is required when instantiating LoRASamplingEngine."
+        if dist.get_rank() == 0:
+            assert vllm_llm is not None
+            self.vllm_llm = vllm_llm
 
-        self.vllm_llm = vllm.LLM(
-            base_model_name,
-            tensor_parallel_size=tensor_parallel_size,
-            gpu_memory_utilization=gpu_memory_utilization,
-            enable_lora=True,
-        )
-
-        # Trigger FSDP initialization before
+        # Trigger FSDP initialization before retrieving weights.
+        # Otherwise FSDP is_root flag might be set incorrectly.
         _wrapped_model = trainer.model
         assert _wrapped_model is not None
         _wrapped_model(input_ids=torch.zeros((1, 1), dtype=torch.int))
@@ -79,9 +70,6 @@ class LoRASamplingEngine(AbstractSamplingEngine):
         Params:
             trainer: Optionally, replace self.trainer with the provided value.
         """
-        if dist.get_rank() != 0:
-            return
-
         if trainer is not None:
             self.trainer = trainer
 
@@ -103,8 +91,10 @@ class LoRASamplingEngine(AbstractSamplingEngine):
         self,
         prompts: list[str],
         sampling_params: vllm.SamplingParams | None = None,
-    ) -> list[list[vllm.CompletionOutput]]:
-        """Generate continuation for the given prompts. Invoke only on rank 0.
+    ) -> list[vllm.RequestOutput]:
+        """Generate continuation for the given prompts. Invoke at all ranks.
+
+        Output will be broadcasted to all ranks.
 
         Params:
         ------
@@ -114,20 +104,34 @@ class LoRASamplingEngine(AbstractSamplingEngine):
 
         Returns
         -------
-            Output from vllm: list[list[vllm.CompletionOutput]]
-                outer layer: one for each prompt.
-                inner layer: one for each output option for the prompt.
+            Output from vllm: list[vllm.RequestOutput], one for each prompt.
 
         """
-        if dist.get_rank() != 0:
-            msg = "LoRA sampling engine is supported only on rank 0."
-            raise RuntimeError(msg)
+        # placeholder for output value,
+        # populate on rank 0 and then broadcast.
+        return_value_local: list[vllm.RequestOutput] | list[None]
+        self.barriers.before_generation.wait()
 
-        assert self.vllm_train_step is not None
-        output_list = self.vllm_llm.generate(
-            prompts,
-            sampling_params,
-            lora_request=self.lora_request,
-            use_tqdm=True,
-        )
-        return [output.outputs for output in output_list]
+        if dist.get_rank() == 0:
+            assert self.vllm_train_step is not None
+            return_value_local = self.vllm_llm.generate(
+                prompts,
+                sampling_params,
+                lora_request=self.lora_request,
+                use_tqdm=True,
+            )
+            assert len(return_value_local) == len(prompts)
+
+        else:
+            # torch requires placeholder output lists of same length as src.
+            return_value_local = [None] * len(prompts)
+
+        self.barriers.after_generation.wait()
+
+        dist.broadcast_object_list(return_value_local)
+        return_value: list[vllm.RequestOutput] = []
+        for broadcasted_item in return_value_local:
+            assert broadcasted_item is not None
+            return_value.append(broadcasted_item)
+
+        return return_value

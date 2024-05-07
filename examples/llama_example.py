@@ -12,8 +12,10 @@ import torch.distributed as dist
 from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import set_seed
+from vllm import SamplingParams
 
 from vectorlm.dataset import Dataset
+from vectorlm.sampling import LoRASamplingEngine
 from vectorlm.trainer import Trainer
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.misc_utils import cleanup, setup, wandb_setup
@@ -32,9 +34,7 @@ from vectorlm.utils.save_utils import (
 )
 
 if TYPE_CHECKING:
-    from threading import Barrier
-
-    from vllm import LLM, RequestOutput
+    from vllm import LLM
 
     from vectorlm.sampling.utils import SynchronizationBarriers
 
@@ -104,7 +104,7 @@ def main(
     print(f"Rank: {rank}, World size: {world_size}")
 
     # setup wandb
-    if rank == 0:
+    if rank == 0 and config.enable_wandb_logging:
         wandb_setup(config, **config.wandb_config)
 
     # load model and tokenizer
@@ -197,6 +197,16 @@ def main(
     # If no checkpoint, it returns 0.
     checkpointed_epoch = trainer.find_checkpoint(training_args.output_dir)
 
+    if sampler_config is not None:
+        vllm_llm = get_vllm_llm() if get_vllm_llm is not None else None
+        print("Initializing sampling_engine")
+        sampling_engine = LoRASamplingEngine(
+            trainer,
+            vllm_llm,  # required only for rank 0
+            SamplingParams(seed=0, temperature=0),
+            barriers,
+        )
+
     for epoch in range(checkpointed_epoch, training_args.epochs):
         train_dl_iterator = iter(dataset.train_dataloader)
         for index in tqdm(
@@ -210,18 +220,9 @@ def main(
             if (sampler_config is not None) and (
                 index % training_args.sampler.sample_frequency == 0
             ):
-                assert barriers is not None
-                barriers.before_generation.wait()
-
-                if dist.get_rank() == 0:
-                    assert get_vllm_llm is not None
-                    # the line below should block until vllm finishes running.
-                    output = get_vllm_llm().generate(
-                        training_args.sampler.prompts,
-                    )
-                    print(output)
-
-                barriers.after_generation.wait()
+                sampling_engine.update(trainer)
+                output = sampling_engine.generate(sampler_config.prompts)
+                print(output[0].prompt + output[0].outputs[0].text)
 
             dist.barrier()
 
@@ -241,6 +242,8 @@ def main(
             save_peft_adapter(trainer.model, hf_save_dir)
 
         dataset.reset_dataloaders()
+
+    sys.exit(0)
 
 
 if __name__ == "__main__":

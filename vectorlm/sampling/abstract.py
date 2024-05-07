@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 import vllm
 
 from vectorlm.trainer import Trainer
+
+if TYPE_CHECKING:
+    from .utils import SynchronizationBarriers
 
 
 class AbstractSamplingEngine(ABC):
@@ -15,17 +19,24 @@ class AbstractSamplingEngine(ABC):
     def __init__(
         self,
         trainer: Trainer,
+        vllm_llm: vllm.LLM | None = None,
         sampling_params: vllm.SamplingParams | None = None,
+        synchronization_barriers: SynchronizationBarriers | None = None,
     ) -> None:
         """Initialize sampling engine.
 
         Params:
             trainer: Trainer instance.
+            vllm_llm: Instance of vllm.LLM, required only for rank 0.
             sampling_params: Optionally, specify default sampling params.
+            synchronization_barriers: Optionally, supply barriers to
+                prevent workers from accessing GPU while vLLM is running.
 
         """
         self.trainer = trainer
+        self.vllm_llm = vllm_llm
         self.sampling_params = sampling_params
+        self.synchronization_barriers = synchronization_barriers
 
     def update(self, trainer: Trainer | None = None) -> None:
         """Inform the sampling engine that the model in trainer is updated.
@@ -41,8 +52,10 @@ class AbstractSamplingEngine(ABC):
         self,
         prompts: list[str],
         sampling_params: vllm.SamplingParams | None = None,
-    ) -> list[list[vllm.CompletionOutput]]:
+    ) -> list[vllm.RequestOutput]:
         """Generate continuation for the given prompts synchronously.
+
+        Invoke at all ranks. Output will be broadcasted to all ranks.
 
         Params:
         ------
@@ -52,8 +65,6 @@ class AbstractSamplingEngine(ABC):
 
         Returns
         -------
-            Output from vllm: list[list[vllm.CompletionOutput]]
-                outer layer: one for each prompt.
-                inner layer: one for each output option for the prompt.
+            Output from vllm: list[vllm.RequestOutput], one for each prompt.
 
         """

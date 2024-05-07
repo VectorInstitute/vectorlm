@@ -19,7 +19,6 @@ entirely blocking.
 from __future__ import annotations
 
 import argparse
-import logging
 import multiprocessing
 import multiprocessing.context
 import multiprocessing.managers
@@ -47,8 +46,6 @@ from vectorlm.sampling.utils import (
     get_vllm_worker_factory,
 )
 from vectorlm.utils.data_utils import Config
-
-logging.basicConfig(level=logging.DEBUG)
 
 
 class _VLLMCallbackWrapper:
@@ -121,6 +118,12 @@ class _VLLMCallbackWrapper:
         Before invoking this method, make sure no other vectorlm threads
         is using the GPU. This method blocks until vLLM finishes running
         completely.
+
+        Note that it might be more elegant to use generate instead of
+        directly invoking LLM.generate, so that this implementation can
+        handle the broadcasting and synchronization safely. However,
+        doing so would prevent some IDE from inferring the argument types
+        correctly.
         """
         assert self.llm is not None
         return self.llm.generate(*args, **kwargs)
@@ -231,6 +234,7 @@ if __name__ == "__main__":
         ),
         tensor_parallel_size=world_size,
         dtype=sampler_config.get("vllm_dtype", "auto"),
+        enable_lora=True,
     ).create_engine_config()
 
     # Block all N vectorlm threads until main process finished
@@ -283,6 +287,6 @@ if __name__ == "__main__":
     print("main: vllm_init_barrier cleared")
 
     output = vllm_callback_wrapper.llm.generate("Vector Institute is")
-    print(output)
+    print(output[0].prompt + output[0].outputs[0].text)
 
     vllm_callback_wrapper.join_vectorlm_thread()
