@@ -22,13 +22,13 @@ partitions = launcher_args.partitions.split(",")
 model_list = [
     "/model-weights/" + model_name
     for model_name in [
-        "opt-350m",
-        "gemma-2b",
-        "Llama-2-7b-hf",
+        # "opt-350m",
+        # "gemma-2b",
+        # "Llama-2-7b-hf",
         "Meta-Llama-3-8B",
-        "Llama-2-13b-hf",
-        "Mistral-7B-v0.1",
-        "Mixtral-8x7B-Instruct-v0.1",
+        # "Llama-2-13b-hf",
+        # "Mistral-7B-v0.1",
+        # "Mixtral-8x7B-Instruct-v0.1",
     ]
 ]
 
@@ -38,15 +38,15 @@ config_list = [
 ]
 
 # Set to (-1) to fall back to the max context length of the pre-trained model.
-max_length_list = [1024, 2048, -1]
-batch_size = [8, 32, 128]
+max_length_list = [-1]
+per_device_train_batch_size = [2, 4, 8]
 
 slurm_flags_options = {
     "nodes": [1],
     "mem-per-gpu": ["16GB"],
     "ntasks-per-node": [1],
     "cpus-per-gpu": [3],
-    "gres": [f"gpu:{n}" for n in [1, 2, 4, 8]],
+    "gres": [f"gpu:{n}" for n in [1, 2, 4]],
     "partition": partitions,
 }
 
@@ -58,7 +58,7 @@ slurm_pos_args_options = [
     config_list,
     model_list,
     max_length_list,
-    batch_size,
+    per_device_train_batch_size,
 ]
 timestamp = int(time.time())
 

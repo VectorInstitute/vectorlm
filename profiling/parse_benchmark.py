@@ -15,8 +15,9 @@ import pandas as pd
 
 Numbers = Union[int, float]
 NumericalTypes = Union[Numbers, np.ndarray]
-Numerical = TypeVar("Numerical", bound=NumericalTypes)
+V = TypeVar("V")
 Aggregator = TypeVar("Aggregator")
+Numerical = TypeVar("Numerical", bound=NumericalTypes)
 
 
 @dataclass
@@ -97,7 +98,7 @@ def _reduce_metric(
 
 
 def get_quantiles(values: list[Numbers]) -> np.ndarray:
-    """Given a list of numerical values, return (min, 25%, 50%, 75%, and max).
+    """Given a list of numerical values, return (min, 25%, 50%, 75%, 95%, max).
 
     Params
     ------
@@ -110,7 +111,7 @@ def get_quantiles(values: list[Numbers]) -> np.ndarray:
     """
     output_list = [
         np.min(values),
-        *[np.percentile(values, q) for q in [0.25, 0.5, 0.75]],
+        *[np.percentile(values, q) for q in [0.25, 0.5, 0.75, 0.95]],
         np.max(values),
     ]
 
@@ -137,8 +138,11 @@ for jsonl_filename in benchmark_jsonl_list:
 
 # Set of tuples the form (model_name, device)
 benchmarked_combinations: set[tuple[str, str]] = set()
-aggregated_output: dict[tuple[str, str], RunningAverage] = defaultdict(
-    lambda: RunningAverage(),
+# Map (model, device) pair to dict mapping (batch_size, seq_len) to aggregator.
+aggregated_output: dict[tuple[str, str], dict[str, RunningAverage]] = (
+    defaultdict(
+        lambda: defaultdict(lambda: RunningAverage()),
+    )
 )
 profiler_tables = defaultdict(dict)
 
@@ -191,8 +195,14 @@ for raw_benchmark in raw_benchmarks:
             train_throughput = get_quantiles(
                 world_size * num_tokens / time_elapsed,
             )
-            aggregated_output[(model_name, device_description)].add(
-                train_throughput[2],
+            aggregated_output[(model_name, device_description)][
+                (
+                    str(benchmark_output.get("training_batch_size"))
+                    + "x"
+                    + str(benchmark_output.get("max_length"))
+                )
+            ].add(
+                train_throughput[-2],
             )
 
     # torch profiler output in tabular format
@@ -205,8 +215,24 @@ for raw_benchmark in raw_benchmarks:
 aggregated_output_nested = defaultdict(dict)
 for combination in benchmarked_combinations:
     model_name, device_description = combination
-    throughput = aggregated_output[combination].get_average()
-    aggregated_output_nested[model_name][device_description] = throughput
+    # avg throughput for each batch size option.
+    throughput: list[tuple[NumericalTypes, str]] = [
+        (average, batch_size)
+        for (average, batch_size) in (
+            (aggregation.get_average(), batch_size)
+            for batch_size, aggregation in aggregated_output[
+                combination
+            ].items()
+        )
+        if average is not None
+    ]
+    if len(throughput) == 0:
+        continue
+
+    optimal_throughput, optimal_batch_size = sorted(throughput, reverse=True)[0]
+    aggregated_output_nested[model_name][device_description] = (
+        f"{optimal_throughput:.2f} ({optimal_batch_size})"
+    )
 
 
 throughput_table = (

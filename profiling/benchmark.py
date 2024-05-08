@@ -67,7 +67,7 @@ def parse_args() -> Namespace:
         default=1000,
     )
     parser.add_argument("--max_length", type=int)
-    parser.add_argument("--training_batch_size", type=int)
+    parser.add_argument("--per_device_train_batch_size", type=int)
     return parser.parse_args()
 
 
@@ -273,9 +273,24 @@ if __name__ == "__main__":
 
     setup(config.train_parameters.output_dir)
 
-    if args.training_batch_size is not None:
-        config.dataset.train_bs = args.training_batch_size
-        write_metrics("training_batch_size", args.training_batch_size)
+    training_args = config.train_parameters
+
+    # set a seed
+    set_seed(training_args.seed)
+
+    # set CUDA related dependencies
+    local_rank = int(os.environ["LOCAL_RANK"])
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+
+    if args.per_device_train_batch_size is not None:
+        config.dataset.train_bs = args.per_device_train_batch_size
+
+    write_metrics("training_batch_size", config.dataset.train_bs)
+    write_metrics(
+        "training_batch_size_global",
+        config.dataset.train_bs * world_size,
+    )
 
     print(f"Writing metrics to {output_path}")
     write_metrics("model_name", args.model_name)
@@ -290,16 +305,6 @@ if __name__ == "__main__":
         active=3,
         repeat=2,
     )
-
-    training_args = config.train_parameters
-
-    # set a seed
-    set_seed(training_args.seed)
-
-    # set CUDA related dependencies
-    local_rank = int(os.environ["LOCAL_RANK"])
-    rank = int(os.environ["RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
 
     with track_time("dist_init"):
         print(f"Rank: {rank}, World size: {world_size}")
@@ -368,7 +373,7 @@ if __name__ == "__main__":
 
         print(
             f"Sequence length: {dataset.max_length};"
-            f"Batch Size: {args.training_batch_size}",
+            f"Batch Size (per device): {config.dataset.train_bs}",
         )
         write_metrics("max_length", dataset.max_length)
 
