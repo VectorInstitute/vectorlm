@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 
 import vllm
 
-from vectorlm.trainer import Trainer
-
 if TYPE_CHECKING:
+    from vectorlm.trainer import Trainer
+
     from .utils import SynchronizationBarriers
 
 

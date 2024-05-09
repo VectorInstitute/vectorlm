@@ -23,7 +23,7 @@ import multiprocessing
 import multiprocessing.context
 import multiprocessing.managers
 import threading
-from functools import partial, wraps
+from functools import partial
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
@@ -104,29 +104,6 @@ class _VLLMCallbackWrapper:
 
         self.llm = ManagedLLM(self.llm_engine)
         print(f"Instantiated ManagedLLM: {self.llm}")
-
-    @wraps(LLM.generate)
-    def generate(
-        self,
-        *args,  # noqa: ANN002
-        **kwargs,  # noqa: ANN003
-    ) -> list[vllm.RequestOutput]:
-        """Invoke self.llm.generate.
-
-        All args and kwargs are forwarded to llm.generate.
-
-        Before invoking this method, make sure no other vectorlm threads
-        is using the GPU. This method blocks until vLLM finishes running
-        completely.
-
-        Note that it might be more elegant to use generate instead of
-        directly invoking LLM.generate, so that this implementation can
-        handle the broadcasting and synchronization safely. However,
-        doing so would prevent some IDE from inferring the argument types
-        correctly.
-        """
-        assert self.llm is not None
-        return self.llm.generate(*args, **kwargs)
 
     def get_vllm_llm(self) -> LLM:
         """Return LLM instance.

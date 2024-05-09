@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import peft
 import torch
@@ -13,6 +13,7 @@ from transformers import PreTrainedTokenizer
 
 import wandb
 from vectorlm.dataset import Dataset
+from vectorlm.sampling import handle_sample
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.save_utils import (
     checkpoint_exists,
@@ -27,6 +28,9 @@ from vectorlm.utils.save_utils import (
     save_peft_adapter,
     save_scheduler,
 )
+
+if TYPE_CHECKING:
+    from vectorlm.sampling import AbstractSamplingEngine
 
 
 class Trainer:
@@ -90,6 +94,7 @@ class Trainer:
         self.max_steps = None
         self.saving_steps = None
         self._post_process(original_dataset_length)
+        self.sampling_engine: AbstractSamplingEngine | None = None
 
         if hasattr(self.config, "lora_peft_config"):
             self.peft_method = peft.utils.peft_types.PeftType.LORA
@@ -268,6 +273,22 @@ class Trainer:
         test_loss = None
         if self.tr_step % self.logging_steps == 0:
             test_loss = self.eval_step(epoch)
+
+        if (self.sampling_engine is not None) and (
+            self.tr_step % self.config.sampler.sample_frequency == 0
+        ):
+            self.sampling_engine.update(self)
+            handle_sample(
+                self.sampling_engine,
+                self.config.sampler.prompts,
+                output_path=(
+                    self.config.sampler.output_jsonl_path
+                    if dist.get_rank() == 0
+                    else None
+                ),
+                extra_data={"train_step": self.tr_step},
+            )
+
         self.tr_step += 1
         return train_loss, test_loss
 

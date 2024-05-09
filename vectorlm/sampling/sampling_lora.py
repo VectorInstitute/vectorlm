@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING, Callable
 
 import torch
 import torch.distributed as dist
 import vllm
 from vllm.lora.request import LoRARequest
 
-from vectorlm.trainer import Trainer
 from vectorlm.utils.save_utils import save_peft_adapter
 
 from .abstract import AbstractSamplingEngine
-from .utils import SynchronizationBarriers
+from .utils import SynchronizationBarriers, multiprocess_wrap
+
+if TYPE_CHECKING:
+    from vectorlm.trainer import Trainer
 
 
 class LoRASamplingEngine(AbstractSamplingEngine):
@@ -54,6 +57,14 @@ class LoRASamplingEngine(AbstractSamplingEngine):
         if dist.get_rank() == 0:
             assert vllm_llm is not None
             self.vllm_llm = vllm_llm
+            generate_fn_raw = vllm_llm.generate
+        else:
+            # placeholder, as the wrapped_fn won't be invoked outside rank-0.
+            generate_fn_raw: Callable[..., list[vllm.RequestOutput]] = (
+                lambda: None
+            )  # type: ignore []
+
+        self.generate_fn = multiprocess_wrap(generate_fn_raw, self.barriers)
 
         # Trigger FSDP initialization before retrieving weights.
         # Otherwise FSDP is_root flag might be set incorrectly.
@@ -76,6 +87,7 @@ class LoRASamplingEngine(AbstractSamplingEngine):
         wrapped_model = self.trainer.model
         assert wrapped_model is not None
 
+        self.barriers.before_generation.wait()
         if self.vllm_train_step != self.trainer.tr_step:
             save_peft_adapter(wrapped_model, self.adapter_temp_folder)
             assert self.trainer.tr_step is not None
@@ -86,6 +98,8 @@ class LoRASamplingEngine(AbstractSamplingEngine):
                 self.vllm_train_step + 1,
                 self.adapter_temp_folder,
             )
+
+        self.barriers.after_generation.wait()
 
     def generate(
         self,
@@ -107,31 +121,12 @@ class LoRASamplingEngine(AbstractSamplingEngine):
             Output from vllm: list[vllm.RequestOutput], one for each prompt.
 
         """
-        # placeholder for output value,
-        # populate on rank 0 and then broadcast.
-        return_value_local: list[vllm.RequestOutput] | list[None]
-        self.barriers.before_generation.wait()
-
-        if dist.get_rank() == 0:
-            assert self.vllm_train_step is not None
-            return_value_local = self.vllm_llm.generate(
-                prompts,
-                sampling_params,
-                lora_request=self.lora_request,
-                use_tqdm=True,
-            )
-            assert len(return_value_local) == len(prompts)
-
-        else:
-            # torch requires placeholder output lists of same length as src.
-            return_value_local = [None] * len(prompts)
-
-        self.barriers.after_generation.wait()
-
-        dist.broadcast_object_list(return_value_local)
-        return_value: list[vllm.RequestOutput] = []
-        for broadcasted_item in return_value_local:
-            assert broadcasted_item is not None
-            return_value.append(broadcasted_item)
+        return_value = self.generate_fn(
+            prompts,
+            sampling_params,
+            lora_request=self.lora_request,
+            use_tqdm=True,
+        )
+        assert len(return_value) == len(prompts)
 
         return return_value

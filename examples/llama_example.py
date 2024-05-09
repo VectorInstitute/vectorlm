@@ -193,37 +193,30 @@ def main(
         is_peft_adapter_restored,
     )
 
-    # Checkpoint check. Always call before training.
-    # If no checkpoint, it returns 0.
-    checkpointed_epoch = trainer.find_checkpoint(training_args.output_dir)
-
     if sampler_config is not None:
+        # vllm_llm is required only on rank 0.
         vllm_llm = get_vllm_llm() if get_vllm_llm is not None else None
-        print("Initializing sampling_engine")
         sampling_engine = LoRASamplingEngine(
             trainer,
             vllm_llm,  # required only for rank 0
             SamplingParams(seed=0, temperature=0),
             barriers,
         )
+        trainer.sampling_engine = sampling_engine
+
+    # Checkpoint check. Always call before training.
+    # If no checkpoint, it returns 0.
+    checkpointed_epoch = trainer.find_checkpoint(training_args.output_dir)
 
     for epoch in range(checkpointed_epoch, training_args.epochs):
         train_dl_iterator = iter(dataset.train_dataloader)
-        for index in tqdm(
+        for _ in tqdm(
             range(len(dataset.train_dataloader)),
             disable=rank != 0,
             file=sys.__stdout__,
         ):
             batch = next(train_dl_iterator)
             trainer.step(batch, epoch)
-
-            if (sampler_config is not None) and (
-                index % training_args.sampler.sample_frequency == 0
-            ):
-                sampling_engine.update(trainer)
-                output = sampling_engine.generate(sampler_config.prompts)
-                print(output[0].prompt + output[0].outputs[0].text)
-
             dist.barrier()
 
         if epoch == training_args.epochs - 1:
