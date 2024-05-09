@@ -25,7 +25,6 @@ from vectorlm.utils.misc_utils import cleanup, setup, wandb_setup
 from vectorlm.utils.model_utils import (
     get_lora_model_from_base_model,
     get_submodule_by_pattern,
-    hook_activation_checkpointing,
     load_model_and_tokenizer,
     shard_model,
 )
@@ -67,7 +66,7 @@ def parse_args() -> Namespace:
         default=1000,
     )
     parser.add_argument("--max_length", type=int)
-    parser.add_argument("--per_device_train_batch_size", type=int)
+    parser.add_argument("--per_device_batch_size", type=int)
     return parser.parse_args()
 
 
@@ -283,10 +282,12 @@ if __name__ == "__main__":
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
 
-    if args.per_device_train_batch_size is not None:
-        config.dataset.train_bs = args.per_device_train_batch_size
+    if args.per_device_batch_size is not None:
+        config.dataset.train_bs = args.per_device_batch_size
+        config.dataset.eval_bs = args.per_device_batch_size
 
     write_metrics("training_batch_size", config.dataset.train_bs)
+    write_metrics("eval_batch_size", config.dataset.eval_bs)
     write_metrics(
         "training_batch_size_global",
         config.dataset.train_bs * world_size,
@@ -357,10 +358,6 @@ if __name__ == "__main__":
             is_lora_enabled=is_lora_enabled,
         )
 
-    with track_time("set_activation_checkpointing"):
-        if training_args.use_activation_checkpointing:
-            hook_activation_checkpointing(model, decoder_layer_module)
-
     # load dataset
     with track_time("dataset_load"):
         dataset = BenchmarkingDataset(
@@ -429,8 +426,11 @@ if __name__ == "__main__":
                 batch = next(train_dl_iterator)
                 num_tokens = len(batch["input_ids"].flatten())
 
-                with track_time("train_step", {"num_tokens": num_tokens}):
-                    trainer.step(batch, epoch)
+                with track_time(
+                    "train_step",
+                    {"num_tokens": num_tokens * world_size},
+                ):
+                    trainer.train_step(batch, epoch)
 
                 profile_handle.step()
                 write_metrics(

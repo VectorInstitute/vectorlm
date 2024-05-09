@@ -20,6 +20,10 @@ Aggregator = TypeVar("Aggregator")
 Numerical = TypeVar("Numerical", bound=NumericalTypes)
 
 
+# Skip first N train steps (warmup, profiling, etc.) in throughput eval.
+NUM_SKIPPED_STEPS = 80
+
+
 @dataclass
 class RunningAverage:
     """Abstraction for tracking numbers required to compute averages.
@@ -109,9 +113,14 @@ def get_quantiles(values: list[Numbers]) -> np.ndarray:
         np.ndarray.
 
     """
+    percentiles = [0.25, 0.5, 0.75, 0.95]
+
+    if len(values) == 0:
+        return [np.nan] * (1 + len(percentiles) + 1)
+
     output_list = [
         np.min(values),
-        *[np.percentile(values, q) for q in [0.25, 0.5, 0.75, 0.95]],
+        *[np.percentile(values, q) for q in percentiles],
         np.max(values),
     ]
 
@@ -165,15 +174,15 @@ for raw_benchmark in raw_benchmarks:
         benchmark_output[name] = new_value
 
     model_name = benchmark_output.get("model_name")
+    context_window = benchmark_output.get("max_length")
     if model_name is None:
         continue
 
     model_name = model_name.split("/")[-1]
+    model_name = f"{model_name} ({context_window})"
     source_filename = benchmark_output["_source"]
 
     peft_method = benchmark_output.get("peft_method")
-    if peft_method == "lora" and model_name == "gemma-2b":
-        print(source_filename)
     if peft_method is None:
         continue
 
@@ -185,7 +194,7 @@ for raw_benchmark in raw_benchmarks:
         world_size = device_info["world_size"]
     device_description = f"({peft_method}) {device_name} x{world_size}"
 
-    # Training throughput can be noisy. Report quantiles instead of avg,
+    # Training throughput can be noisy. Report median throughput,
     # and discard instances with only one training step logged.
     train_step = benchmark_output.get("train_step")
     if train_step is not None:
@@ -193,16 +202,12 @@ for raw_benchmark in raw_benchmarks:
         time_elapsed = np.asarray(train_step["time_elapsed"])
         if num_tokens.flatten().shape[0] > 1:
             train_throughput = get_quantiles(
-                world_size * num_tokens / time_elapsed,
+                (num_tokens / time_elapsed)[NUM_SKIPPED_STEPS:],
             )
             aggregated_output[(model_name, device_description)][
-                (
-                    str(benchmark_output.get("training_batch_size"))
-                    + "x"
-                    + str(benchmark_output.get("max_length"))
-                )
+                "batch: " + str(benchmark_output.get("training_batch_size"))
             ].add(
-                train_throughput[-2],
+                train_throughput[2],
             )
 
     # torch profiler output in tabular format
@@ -215,7 +220,9 @@ for raw_benchmark in raw_benchmarks:
 aggregated_output_nested = defaultdict(dict)
 for combination in benchmarked_combinations:
     model_name, device_description = combination
-    # avg throughput for each batch size option.
+    # there might be more than one run for each batch size option
+    # average median throughput over all runs for each option.
+    # report batch size that achieves optimal (avg) throughput.
     throughput: list[tuple[NumericalTypes, str]] = [
         (average, batch_size)
         for (average, batch_size) in (

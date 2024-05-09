@@ -38,19 +38,20 @@ config_list = [
 ]
 
 # Set to (-1) to fall back to the max context length of the pre-trained model.
-max_length_list = [-1]
-per_device_train_batch_size = [2, 4, 8]
+max_length_list = [8192, 4096, 2048]
+# Per-device batch size for training
+per_device_batch_size = [2, 4, 8]
 
 slurm_flags_options = {
     "nodes": [1],
     "mem-per-gpu": ["16GB"],
     "ntasks-per-node": [1],
     "cpus-per-gpu": [3],
-    "gres": [f"gpu:{n}" for n in [1, 2, 4]],
+    "gres": [f"gpu:{n}" for n in [4, 2, 1]],
     "partition": partitions,
 }
 
-num_repeats = 2
+num_repeats = 1
 slurm_flags_extra = {"time": "01:00:00", "qos": qos_selected}
 
 slurm_pos_args_options = [
@@ -58,7 +59,7 @@ slurm_pos_args_options = [
     config_list,
     model_list,
     max_length_list,
-    per_device_train_batch_size,
+    per_device_batch_size,
 ]
 timestamp = int(time.time())
 
