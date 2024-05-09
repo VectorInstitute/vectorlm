@@ -30,25 +30,10 @@ from transformers import (
 )
 
 
-def get_half_precision_model(model: nn.Module) -> nn.Module:
-    """Cast model to appropriate half-precision format.
-
-    Args:
-    ----
-        model: nn.Module to cast.
-
-    Returns:
-    -------
-        nn.Module
-
-    """
-    return model.bfloat16()
-
-
 def get_lora_model_from_base_model(
     base_model: PreTrainedModel,
     peft_config_dict: dict[str, Any],
-    peft_adapter_path: str | None = None,
+    path_to_peft_adapter_to_restore: str | None = None,
 ) -> PeftModel:
     """Initialize lora peft configuration from a non-lora model.
 
@@ -56,7 +41,7 @@ def get_lora_model_from_base_model(
     ----
         base_model: HuggingFace Transformer model to wrap.
         peft_config_dict: configuration from yaml config file.
-        peft_adapter_path: optionally, initialize peft adapters
+        path_to_peft_adapter_to_restore: optionally, initialize peft adapters
             using tensors loaded from the filesystem.
 
     Returns:
@@ -71,17 +56,17 @@ def get_lora_model_from_base_model(
     # See github.com/pytorch/pytorch/pull/102212
     base_model.load_state_dict(base_model.state_dict(), assign=True)
 
-    if peft_adapter_path is not None:
+    if path_to_peft_adapter_to_restore is not None:
         lora_model = PeftModel.from_pretrained(
             base_model,
-            peft_adapter_path,
+            path_to_peft_adapter_to_restore,
             is_trainable=True,
         )
-        print(f"Restored peft_adapter from {peft_adapter_path}.")
+        print(f"Restored peft_adapter from {path_to_peft_adapter_to_restore}.")
     else:
         lora_model = get_peft_model(base_model, lora_config)
 
-    lora_model = get_half_precision_model(lora_model)
+    lora_model = lora_model.bfloat16()
     assert isinstance(lora_model, PeftModel)
     lora_model.print_trainable_parameters()
     return lora_model
@@ -243,6 +228,7 @@ def fsdp_config(
     ret_dict["auto_wrap_policy"] = auto_wrap_policy
     ret_dict["sharding_strategy"] = sharding_strategy
     ret_dict["device_id"] = torch.cuda.current_device()
+    ret_dict["forward_prefetch"] = True
     if low_cpu_mem_usage:
         ret_dict["param_init_fn"] = _module_init_fn if local_rank != 0 else None
         ret_dict["sync_module_states"] = True
@@ -271,10 +257,10 @@ def shard_model(
         local_rank: The local rank of the current worker.
         low_cpu_mem_usage: Whether to only load model weights on main rank, and
             then scatter them to the other workers.
-        is_lora_enabled: Whether to enable support for LoRA, where only a subset
-            of parameter tensors requires_grad. Enabling might significantly
-            reduce training throughput, so enable this only when actually using
-            LoRA.
+        is_lora_enabled: Whether to enable support for LoRA, where requires_grad
+            is True for only a subset of parameter tensors. Enabling might
+            significantly reduce training throughput, so enable this only when
+            actually using LoRA.
 
     Returns:
     -------

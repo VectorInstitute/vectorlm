@@ -1,7 +1,7 @@
 # Reference Throughput
 
 We've benchmarked VectorLM on the Vaughan cluster for a number of model architectures across a variety of node configurations.
-In experiments labelled as LoRA, we set hidden dimension to 8.
+In experiments labelled as LoRA, we set hidden dimension to 8. During the testing, the NVIDIA driver version was 525.105.17, CUDA Runtime 12.1.105, and torch 2.2.2.
 
 For consistency, we use a batch size of 8 and the maximum context length that the pre-trained LLM supports, capped at 65536. Note that especially for smaller models, it might be possible to further increase throughput by switching to a larger batch size.
 

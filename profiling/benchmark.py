@@ -23,7 +23,6 @@ from vectorlm.trainer import Trainer
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.misc_utils import cleanup, setup, wandb_setup
 from vectorlm.utils.model_utils import (
-    get_half_precision_model,
     get_lora_model_from_base_model,
     get_submodule_by_pattern,
     hook_activation_checkpointing,
@@ -74,8 +73,6 @@ def parse_args() -> Namespace:
 
 # unix timestamp
 launch_time = time.time()
-os.makedirs("data/benchmark", exist_ok=True)
-os.makedirs("data/trace", exist_ok=True)
 output_path = f"data/benchmark/{launch_time}.jsonl"
 profiler_output_path = f"data/trace/{launch_time}.json"
 
@@ -270,6 +267,10 @@ class BenchmarkingDataset(Dataset):
 if __name__ == "__main__":
     args = parse_args()
     config = Config(yaml_path=args.yaml_path)
+
+    os.makedirs("data/benchmark", exist_ok=True)
+    os.makedirs("data/trace", exist_ok=True)
+
     setup(config.train_parameters.output_dir)
 
     if args.training_batch_size is not None:
@@ -312,11 +313,7 @@ if __name__ == "__main__":
     dist.barrier()
 
     # load model and tokenizer
-    lora_peft_config = getattr(
-        config.train_parameters,
-        "lora_peft_config",
-        None,
-    )
+    lora_peft_config = config.train_parameters.get("lora_peft_config")
 
     with track_time("model_load"):
         model, tokenizer = load_model_and_tokenizer(
@@ -335,7 +332,7 @@ if __name__ == "__main__":
         else:
             write_metrics("peft_method", "full_rank")
 
-        model = get_half_precision_model(model)
+        model = model.bfloat16()
         decoder_layer_module = get_submodule_by_pattern(model, r"DecoderLayer$")
 
     if decoder_layer_module is None:

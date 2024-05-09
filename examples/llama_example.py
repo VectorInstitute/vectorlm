@@ -117,16 +117,16 @@ def main(
         training_args.low_cpu_mem_usage,
     )
 
-    lora_peft_config = getattr(
-        config.train_parameters,
-        "lora_peft_config",
-        None,
-    )
+    lora_peft_config = config.train_parameters.get("lora_peft_config")
     is_peft_adapter_restored = False
+    is_lora_enabled = False
     if lora_peft_config is not None:
+        is_lora_enabled = True
         peft_adapter_path = None
         # Restore peft adapter from filesystem if available.
-        if checkpoint_exists(training_args.output_dir):
+        if (training_args.checkpointing_enabled) and checkpoint_exists(
+            training_args.output_dir,
+        ):
             peft_adapter_path = os.path.join(
                 training_args.output_dir,
                 "checkpoints",
@@ -152,7 +152,7 @@ def main(
         training_args.sharding_strategy,
         local_rank,
         training_args.low_cpu_mem_usage,
-        is_lora_enabled=(lora_peft_config is not None),
+        is_lora_enabled,
     )
 
     # load dataset
@@ -228,12 +228,11 @@ def main(
                 f"epoch_{epoch}",
                 "end-epoch-model",
             )
-        # Save base (consolidated) model only when not running peft.
-        if lora_peft_config is None:
-            save_consolidated_model(trainer.model, hf_save_dir, rank)
-        else:
-            save_peft_adapter(trainer.model, hf_save_dir)
 
+        if is_lora_enabled:
+            save_peft_adapter(trainer.model, hf_save_dir)
+        else:
+            save_consolidated_model(trainer.model, hf_save_dir, rank)
         dataset.reset_dataloaders()
 
     sys.exit(0)

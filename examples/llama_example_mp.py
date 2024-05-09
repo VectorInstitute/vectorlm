@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING, Callable
 if TYPE_CHECKING:
     from vllm.worker.worker_base import WorkerBase
 
-import vllm
 from llama_example import main
 from vllm.engine.arg_utils import EngineArgs, EngineConfig
 from vllm.engine.llm_engine import LLMEngine
@@ -110,8 +109,9 @@ class _VLLMCallbackWrapper:
 
         Invoke this method only within the main (rank 0 driver) process.
         """
-        if self.llm is None:
-            self.initialize_engine()
+        assert (
+            self.llm is not None
+        ), "Must finish initialize_engine before starting vectorlm logic."
 
         llm = self.llm
         assert llm is not None

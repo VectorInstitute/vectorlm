@@ -19,12 +19,10 @@ from vectorlm.utils.save_utils import (
     checkpoint_exists,
     get_latest_checkpoint_dir,
     load_metadata,
-    load_model,
-    load_optimizer,
+    load_model_and_optimizer,
     load_scheduler,
     save_metadata,
-    save_model,
-    save_optimizer,
+    save_model_and_optimizer,
     save_peft_adapter,
     save_scheduler,
 )
@@ -56,9 +54,6 @@ class Trainer:
 
 
     """
-
-    peft_method: str | None = None
-    is_peft_adapter_restored: bool = False
 
     def __init__(
         self,
@@ -94,10 +89,16 @@ class Trainer:
         self.max_steps = None
         self.saving_steps = None
         self._post_process(original_dataset_length)
-        self.sampling_engine: AbstractSamplingEngine | None = None
+        self.peft_method: str | None = None
+        self.is_peft_adapter_restored: bool = False
 
-        if hasattr(self.config, "lora_peft_config"):
+        if "lora_peft_config" in self.config:
             self.peft_method = peft.utils.peft_types.PeftType.LORA
+
+        self.peft_method: str | None = None
+        self.is_peft_adapter_restored: bool = False
+
+        self.sampling_engine: AbstractSamplingEngine | None = None
 
     def _post_process(self, ds_orig_length: int) -> None:
         """Calculate steps for weight updates and saving."""
@@ -172,15 +173,19 @@ class Trainer:
         if rank == 0:
             save_metadata(save_dir, meta_dict)
 
-        # Save adapter only if running LoRA.
-        # Merging adapters into base weights would require gathering
-        # all weights, which would incur significant overhead.
-        if self.peft_method is peft.utils.peft_types.PeftType.LORA:
-            save_peft_adapter(self.model, save_dir)
-        else:
-            save_model(self.model, save_dir, rank)
+        # If peft is enabled, save only the peft adapters
+        # and adapter optimizer state, but not base LLM weights.
+        save_model_and_optimizer(
+            self.optimizer,
+            self.model,
+            save_dir,
+            rank,
+            include_model_state=(self.peft_method is None),
+        )
 
-        save_optimizer(self.optimizer, self.model, save_dir, rank)
+        if self.peft_method is not None:
+            save_peft_adapter(self.model, save_dir)
+
         save_scheduler(self.lr_scheduler, save_dir, rank)
 
         dist.barrier()
@@ -205,18 +210,18 @@ class Trainer:
         self.dataset.set_processed_ids(ids)
         self.dataset.setup_dataloaders()
 
-        if self.peft_method is peft.utils.peft_types.PeftType.LORA:
-            # The FSDP wrapper is applied to self.model after the LoRA wrapper.
-            # It is unclear whether peft supports updating the LoRA wrapper
-            # tensors of a FSDP-wrapped module. Hence, the peft adapter
-            # is restored when initializing the LoRA wrapper
-            # before applying the FSDP wrapper, and the is_peft_adapter_restored
-            # ensures that the adapter is indeed applied.
+        if self.peft_method is not None:
+            # peft adapters are not restored in this method.
+            # These should have been restored before applying FSDP.
             assert self.is_peft_adapter_restored
-        else:
-            load_model(self.model, checkpoint_dir, rank)
 
-        load_optimizer(self.optimizer, self.model, checkpoint_dir, rank)
+        # Skip overwriting base model weights if peft is enabled.
+        load_model_and_optimizer(
+            self.optimizer,
+            self.model,
+            checkpoint_dir,
+            optimizer_only=self.is_peft_adapter_restored,
+        )
         load_scheduler(self.lr_scheduler, checkpoint_dir, rank)
         dist.barrier()
         return epoch
@@ -236,7 +241,7 @@ class Trainer:
 
         """
         checkpoint = checkpoint_exists(checkpoint_dir)
-        if checkpoint:
+        if (checkpoint) and (self.config.checkpointing_enabled):
             main_ckpt_dir = os.path.join(checkpoint_dir, "checkpoints")
             latest_ckpt_dir = get_latest_checkpoint_dir(main_ckpt_dir)
             full_ckpt_dir = os.path.join(main_ckpt_dir, latest_ckpt_dir)

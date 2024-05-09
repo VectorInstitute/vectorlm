@@ -125,7 +125,7 @@ class LoRASamplingEngine(AbstractSamplingEngine):
             prompts,
             sampling_params,
             lora_request=self.lora_request,
-            use_tqdm=True,
+            use_tqdm=False,
         )
         assert len(return_value) == len(prompts)
 
