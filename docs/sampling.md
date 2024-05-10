@@ -1,0 +1,25 @@
+# Efficient Sampling during training
+
+Some training objectives, noteably PPO, require "sampling" from the language model many times during training. One possible approach is to invoke the model.generate that HuggingFace provides. At the same time, there have been a number of efficient inference approaches, including vLLM and others, that achieve over 10x the sampling throughput in terms of tokens generated per second when using a large sampling batch size. If model.generate is taking up too much of the training time, it might be worthwhile looking into these third-party solutions for speeding up the sampling process.
+
+One main challenge of running these third-party solutions, however, is that most of them assume that the weights of the language model are fixed and do not provide a straightforward way of updating these weights without restarting the sampling engine, which sometimes take minutes. However, the performance of PPO and similar techniques heavily rely on the ability to replace the weights efficiently, or else the training would no longer be on-policy and convergence would take substantially more training steps.
+
+Additionally, it is not straightforward to ensure a consistently high GPU utilization throughout both training and sampling. Existing approaches, such as [OpenRLHF Ray PPO](https://github.com/OpenLLMAI/OpenRLHF/blob/adf26867e44765a3963b4e8d249cf58a5162209c/examples/train_ppo_ray.py), uses some GPUs exclusively for sampling so that none of the GPUs would be idle while others are busy running training/inference. This repository enables you to make the most out of your GPUs by fitting vLLM and your training loop into the same set of devices. This way, none of the GPUs would sit idle- if a GPU is not running training, it would be busy sampling using vLLM. These slides ([link](https://docs.google.com/presentation/d/1FCa5O8RYYkRRCAAcXhqCvomePo5fEfhjQciSteTEJ30/edit?usp=sharing)) provide an overview of the architecture behind this approach.
+
+## Example- Supervised fine-tuning
+
+We provide a basic example that samples from the language model while fine-tuning using a basic causal language modelling objective. To run the example, uncomment the "sampler" section in your configuration yaml, choose a port for `nccl` coordination, and run the following command (not using torchrun):
+
+```
+export MASTER_ADDR=127.0.0.1
+export MASTER_PORT=19132
+python3 examples/llama_example_mp.py \
+--yaml_path configs/config.yaml \
+--world_size 2
+```
+
+## Bring your own training loop
+
+While the reference implementation is only for supervised fine-tuning, we provide abstractions that make it easier for you to implement your own training loop- be it PPO RLHF, TWIST, or something else. The goal is to abstract away all the synchronization logic, so that a training loop you've built on one GPU could scale to multiple GPUs on the same server with minimal modifications.
+
+To get started, refer to examples/llama_example.py and vectorlm/trainer.py. Usually, the vLLM Engine is accessible only from the rank 0, making synchronization challenging. When invoked through llama_example_mp, the `SamplingEngine` interface in VectorLM enables your training loop to access vLLM.LLM.generate from all ranks, returning the same result across all ranks. Note that because the synchronization barriers require all ranks to reach the synchronization point, you need to invoke `generate` from all ranks.
