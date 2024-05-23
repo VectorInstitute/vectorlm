@@ -19,30 +19,19 @@ entirely blocking.
 from __future__ import annotations
 
 import argparse
-import multiprocessing
-import multiprocessing.context
-import multiprocessing.managers
-import threading
 from functools import partial
-from typing import TYPE_CHECKING, Callable
-
-if TYPE_CHECKING:
-    from vllm.worker.worker_base import WorkerBase
+from typing import Callable
 
 from llama_example import main
 from vllm.engine.arg_utils import EngineArgs, EngineConfig
 from vllm.engine.llm_engine import LLMEngine
-from vllm.engine.local_worker_utils import LocalWorkerVllm, ResultHandler
 from vllm.entrypoints.llm import LLM
-from vllm.worker.worker import init_worker_distributed_environment
+from vllm.executor.multiproc_worker_utils import ResultHandler, mp
 
 from vectorlm.sampling.utils import (
     ManagedLLM,
     ManagedMultiProcGPUExecutor,
     SynchronizationBarriers,
-    _ensure_torch_dist_is_initialized,
-    _get_rdvz_url,
-    get_vllm_worker_factory,
 )
 from vectorlm.utils.data_utils import Config
 
@@ -55,8 +44,6 @@ class _VLLMCallbackWrapper:
 
     def __init__(
         self,
-        non_driver_workers: list[VectorLMWorker],
-        vllm_result_handler: ResultHandler,
         engine_config: EngineConfig,
         vectorlm_config: Config,
         world_size: int,
@@ -65,23 +52,16 @@ class _VLLMCallbackWrapper:
         """Instantiate class without initializing wrapped vLLM engine."""
         self.llm_engine: LLMEngine | None = None
         self.llm: LLM | None = None
-        self.non_driver_workers = non_driver_workers
-        self.vllm_result_handler = vllm_result_handler
         self.engine_config = engine_config
         self.barriers = barriers
 
-        # Might not be required since LLM.generate is blocking.
-        # torch.dist.barrier might be sufficient for blocking
-        # other worker processes.
-        self.gpu_access_lock = threading.Lock()
-
-        self.vectorlm_main_fn = partial(
+        # Only missing args is local_rank.
+        self.vectorlm_fn: Callable[[int], None] = partial(
             main,
             vectorlm_config,
-            0,
             world_size,
-            self.barriers,
             self.get_vllm_llm,
+            self.barriers,
         )
 
     def initialize_engine(self) -> None:
@@ -89,11 +69,7 @@ class _VLLMCallbackWrapper:
 
         Invoke this method only after vLLM workers are all ready.
         """
-        ManagedMultiProcGPUExecutor.workers = tuple(
-            self.non_driver_workers,
-        )
-        ManagedMultiProcGPUExecutor.vectorlm_main_fn = self.vectorlm_main_fn
-        ManagedMultiProcGPUExecutor.result_handler = self.vllm_result_handler
+        ManagedMultiProcGPUExecutor.vectorlm_fn = self.vectorlm_fn
 
         self.llm_engine = LLMEngine(
             **self.engine_config.to_dict(),
@@ -125,73 +101,7 @@ class _VLLMCallbackWrapper:
         assert self.llm_engine is not None
         model_executor = self.llm_engine.model_executor
         assert isinstance(model_executor, ManagedMultiProcGPUExecutor)
-
-        model_executor.vectorlm_thread.join()
-
-
-class VectorLMWorker(LocalWorkerVllm):
-    """Worker for running VectorLM logic alongside vLLM worker.
-
-    Important: do not use this instance for the rank 0 (root) process.
-
-    Note that nccl requires that only one process may have access
-    to each GPU. Each LocalWorkerVllm is a multiprocessing.Process.
-    Vectorlm logic would be launched as a thread within each of these
-    proceses.
-
-    Spawn no more than one such instance for each GPU.
-    """
-
-    def __init__(
-        self,
-        result_handler: ResultHandler,
-        worker_factory: Callable[[], WorkerBase],
-        vllm_engine_config: EngineConfig,
-        vectorlm_config: Config,
-        local_rank: int,
-        world_size: int,
-        barriers: SynchronizationBarriers,
-    ) -> None:
-        """Instantiate LocalWorkerVllm wrapper.
-
-        vectorlm_dist_init_barrier ensures that torch.dist is initialized in
-        the vectorlm thread and not the main thread (vllm) of the process.
-        """
-        self.vllm_engine_config = vllm_engine_config
-        self.gpu_access_lock = threading.Lock()
-        self.vectorlm_config = vectorlm_config
-        self.local_rank = local_rank
-        self.world_size = world_size
-        self.barriers = barriers
-
-        super().__init__(result_handler, worker_factory)
-
-    def run(self) -> None:
-        """Launch vectorlm logic in a separate thread."""
-        print(f"rank {self.local_rank}: init_worker_dist started")
-        init_worker_distributed_environment(
-            self.vllm_engine_config.parallel_config,
-            self.local_rank,
-            _get_rdvz_url(),
-            self.local_rank,
-        )
-        print(f"rank {self.local_rank}: init_worker_dist completed")
-
-        _ensure_torch_dist_is_initialized()
-
-        self.vectorlm_thread = threading.Thread(
-            target=main,
-            args=(
-                self.vectorlm_config,
-                self.local_rank,
-                self.world_size,
-                self.barriers,
-            ),
-            name=f"rank-{self.local_rank}/vectorlm",
-        )
-        self.vectorlm_thread.start()
-
-        super().run()
+        model_executor.rank_0_vectorlm_thread.join()
 
 
 if __name__ == "__main__":
@@ -219,51 +129,30 @@ if __name__ == "__main__":
     # threads as long as vLLM tasks are running.
     barriers = SynchronizationBarriers(
         # (n+1) threads: __main__, and n vectorlm threads (including main).
-        multiprocessing.Barrier(world_size + 1),
+        mp.Barrier(world_size + 1),
         # n vectorlm threads.
-        multiprocessing.Barrier(world_size),
-        multiprocessing.Barrier(world_size),
+        mp.Barrier(world_size),
+        mp.Barrier(world_size),
     )
     vllm_result_handler = ResultHandler()
 
     # rank 0 worker runs in the __main__ process.
     # all other ranks use one process each.
     # vectorlm logic in each ranks (including rank 0) is in a separate thread.
-    non_driver_workers: list[VectorLMWorker] = [
-        VectorLMWorker(
-            vllm_result_handler,
-            get_vllm_worker_factory(
-                vllm_engine_config,
-                _get_rdvz_url(),
-                local_rank,
-            ),
-            vllm_engine_config,
-            vectorlm_config,
-            local_rank,
-            world_size=world_size,
-            barriers=barriers,
-        )
-        for local_rank in range(1, world_size)
-    ]
     vllm_callback_wrapper = _VLLMCallbackWrapper(
-        non_driver_workers,
-        vllm_result_handler,
         vllm_engine_config,
         vectorlm_config,
         world_size,
         barriers,
     )
 
-    for worker in non_driver_workers:
-        worker.start()
-
     vllm_callback_wrapper.initialize_engine()
     assert vllm_callback_wrapper.llm is not None
+    output = vllm_callback_wrapper.llm.generate("Vector Institute is")
+    print(output[0].prompt + output[0].outputs[0].text)
+
     print("main: vllm_init_barrier waiting")
     barriers.vllm_init.wait()
     print("main: vllm_init_barrier cleared")
-
-    output = vllm_callback_wrapper.llm.generate("Vector Institute is")
-    print(output[0].prompt + output[0].outputs[0].text)
 
     vllm_callback_wrapper.join_vectorlm_thread()

@@ -10,30 +10,27 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Iterable, NamedTuple, TypeVar
 
 from vllm import LLM
-from vllm.engine.local_worker_utils import (
-    LocalWorkerVllm,
+from vllm.executor.multiproc_gpu_executor import MultiprocessingGPUExecutor
+from vllm.executor.multiproc_worker_utils import (
     ResultHandler,
     WorkerMonitor,
-)
-from vllm.executor.multiproc_gpu_executor import (
-    MultiProcGPUExecutor,
-    _create_worker,
 )
 from vllm.utils import (
     Counter,
     get_distributed_init_method,
-    set_cuda_visible_devices,
+    get_ip,
+    get_open_port,
+    get_vllm_instance_id,
 )
-from vllm.worker.worker import init_worker_distributed_environment
+from vllm.worker.worker import Worker
 
 from .abstract import AbstractSamplingEngine
+from .vllm_worker_utils import ManagedProcessWorkerWrapper
 
 if TYPE_CHECKING:
     from threading import Barrier
 
     from vllm import LLMEngine, SamplingParams
-    from vllm.engine.arg_utils import EngineConfig
-    from vllm.worker.worker_base import WorkerBase
 
 
 class SampleOutput(NamedTuple):
@@ -69,34 +66,16 @@ class SynchronizationBarriers(NamedTuple):
     after_generation: Barrier
 
 
-def _ensure_torch_dist_is_initialized() -> None:
-    import torch.distributed
+class ManagedMultiProcGPUExecutor(MultiprocessingGPUExecutor):
+    """MultiProcGPUExecutor, but with VectorLM supplied."""
 
-    assert torch.distributed.is_initialized()
-
-
-def _get_rdvz_url() -> str:
-    """Obtain rendezvous url for Torch dist."""
-    return get_distributed_init_method(
-        os.environ.get("MASTER_ADDR", "127.0.0.1"),
-        int(os.environ["MASTER_PORT"]),
-    )
-
-
-class ManagedMultiProcGPUExecutor(MultiProcGPUExecutor):
-    """MultiProcGPUExecutor, but with worker processes instantiated outside."""
-
-    workers: tuple[LocalWorkerVllm, ...] | None = None
-    vectorlm_main_fn: Callable[[], None] | None = None
-    result_handler: ResultHandler | None = None
+    vectorlm_fn: Callable[[int], None]
 
     def _init_executor(self) -> None:
-        """Initialize executor without initializing workers.
+        """Launch vectorlm logic in workers.
 
-        Same as MultiProcGPUExecutor but assumes self.workers is already set.
-
-        Mostly reproduced from
-        vllm/vllm-ray-optional/vllm/executor/multiproc_gpu_executor.py
+        Supply barriers and pickle-compatible vectorlm main fn to
+        workers via vLLM multiprocessing messaging mechanisms.
         """
         assert (
             not self.speculative_config
@@ -104,14 +83,15 @@ class ManagedMultiProcGPUExecutor(MultiProcGPUExecutor):
 
         # Create the parallel GPU workers.
         world_size = self.parallel_config.tensor_parallel_size
-        assert self.workers is not None
-        assert len(self.workers) == world_size - 1, (
-            f"non-driver workers len(self.workers): {len(self.workers)} "
-            f"should be (world_size - 1) {world_size - 1}"
-        )
 
+        # Set CUDA_VISIBLE_DEVICES for the driver, inherited by workers
         if "CUDA_VISIBLE_DEVICES" not in os.environ:
-            set_cuda_visible_devices(range(world_size))
+            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(
+                map(str, range(world_size))
+            )
+
+        # Ensure that VLLM_INSTANCE_ID is set, to be inherited by workers
+        os.environ["VLLM_INSTANCE_ID"] = get_vllm_instance_id()
 
         from torch.cuda import device_count
 
@@ -119,36 +99,80 @@ class ManagedMultiProcGPUExecutor(MultiProcGPUExecutor):
             world_size <= device_count()
         ), "please set tensor_parallel_size to less than max local gpu count"
 
-        assert self.result_handler is not None
-        self.worker_monitor = WorkerMonitor(
-            list(self.workers),
-            self.result_handler,
+        distributed_init_method = get_distributed_init_method(
+            get_ip(), get_open_port()
         )
-        self.result_handler.start()
-        self.worker_monitor.start()
 
-        distributed_init_method = _get_rdvz_url()
+        if world_size == 1:
+            self.workers = []
+        else:
+            result_handler = ResultHandler()
+            self.workers = [
+                ManagedProcessWorkerWrapper(
+                    result_handler,
+                    partial(
+                        self._create_worker,
+                        rank=rank,
+                        local_rank=rank,
+                        distributed_init_method=distributed_init_method,
+                    ),
+                    partial(self.vectorlm_fn, rank),
+                )
+                for rank in range(1, world_size)
+            ]
 
-        # driver worker is of rank 0
-        print("driver worker: init_worker_dist started")
-        init_worker_distributed_environment(
-            self.parallel_config,
-            0,
-            distributed_init_method,
-            0,
+            self.worker_monitor = WorkerMonitor(self.workers, result_handler)
+            result_handler.start()
+            self.worker_monitor.start()
+
+        self.driver_worker = self._create_worker(
+            distributed_init_method=distributed_init_method,
         )
-        print("driver worker: init_worker_dist completed")
-        _ensure_torch_dist_is_initialized()
-
-        # start vectorlm logic in the same Python process
-        # (albeit in a separate thread)
-        self.vectorlm_thread = threading.Thread(
-            target=self.vectorlm_main_fn,
-            name="driver/vectorlm",
+        self.rank_0_vectorlm_thread = threading.Thread(
+            target=partial(self.vectorlm_fn, 0),
         )
-        self.vectorlm_thread.start()
+        self.rank_0_vectorlm_thread.start()
 
-        self._init_driver_worker_and_model(0, 0, distributed_init_method)
+        self._run_workers("init_device")
+        self._run_workers(
+            "load_model",
+            max_concurrent_workers=self.parallel_config.max_parallel_loading_workers,
+        )
+
+
+class VectorLMWorker(Worker):
+    """Worker for running VectorLM logic alongside vLLM worker.
+
+    Use this instance for the rank 0 (root) process.
+
+    Note that nccl requires that only one process may have access
+    to each GPU. Each LocalWorkerVllm is a multiprocessing.Process.
+    Vectorlm logic would be launched as a thread within each of these
+    proceses.
+
+    Spawn no more than one such instance for each GPU.
+
+    Attributes
+    ----------
+        vectorlm_thread: threading.Thread.
+
+    """
+
+    barriers: SynchronizationBarriers
+    vectorlm_fn: Callable[[SynchronizationBarriers, int], None]
+
+    def launch_vectorlm(self) -> None:
+        """Launch vectorlm logic in a separate thread.
+
+        Params:
+        ------
+             vectorlm_fn: VectorLM logic. Requires no argument. Be sure to
+                populate all arguments via functools.partial.
+            barriers: SynchronizationBarriers for synchronizing VectorLM
+                and vLLM access to NCCL.
+        """
+        assert hasattr(self, "barriers")
+        assert hasattr(self, "vectorlm_fn")
 
 
 class ManagedLLM(LLM):
@@ -211,28 +235,6 @@ def handle_sample(
             output_jsonl_file.write("\n".join(jsonl_output_lines) + "\n\n")
 
     return sample_outputs
-
-
-def get_vllm_worker_factory(
-    engine_config: EngineConfig,
-    distributed_init_method: str,
-    rank: int,
-) -> Callable[[], WorkerBase]:
-    """Initialize vLLM worker."""
-    return partial(
-        _create_worker,
-        model_config=engine_config.model_config,
-        parallel_config=engine_config.parallel_config,
-        scheduler_config=engine_config.scheduler_config,
-        device_config=engine_config.device_config,
-        cache_config=engine_config.cache_config,
-        local_rank=rank,
-        rank=rank,
-        distributed_init_method=distributed_init_method,
-        lora_config=engine_config.lora_config,
-        vision_language_config=engine_config.vision_language_config,
-        tensorizer_config=engine_config.tensorizer_config,
-    )
 
 
 Fn = TypeVar("Fn", bound=Callable[..., Any])

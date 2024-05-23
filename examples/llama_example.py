@@ -58,20 +58,20 @@ def parse_args() -> Namespace:
 
 def main(
     config: Config,
-    local_rank: int | None = None,
     world_size: int | None = None,
-    barriers: SynchronizationBarriers | None = None,
     get_vllm_llm: Callable[[], LLM] | None = None,
+    barriers: SynchronizationBarriers | None = None,
+    local_rank: int | None = None,
 ) -> None:
     """Define the main calling function.
 
     Args:
     ----
         config: vectorlm config, e.g., loaded from yaml
-        local_rank: int, where 0 is root process, one process per accelerator.
         world_size: number of processes.
-        barriers: SynchronizationBarriers, required for all processes.
         get_vllm_llm: required only for root process (rank 0).
+        barriers: SynchronizationBarriers, required for all processes.
+        local_rank: int, where 0 is root process, one process per accelerator.
 
     """
     if barriers is not None:
@@ -195,7 +195,11 @@ def main(
 
     if sampler_config is not None:
         # vllm_llm is required only on rank 0.
-        vllm_llm = get_vllm_llm() if get_vllm_llm is not None else None
+        vllm_llm = (
+            get_vllm_llm()
+            if (get_vllm_llm is not None) and (rank == 0)
+            else None
+        )
         sampling_engine = LoRASamplingEngine(
             trainer,
             vllm_llm,  # required only for rank 0
