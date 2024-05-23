@@ -101,7 +101,8 @@ class _VLLMCallbackWrapper:
         assert self.llm_engine is not None
         model_executor = self.llm_engine.model_executor
         assert isinstance(model_executor, ManagedMultiProcGPUExecutor)
-        model_executor.rank_0_vectorlm_thread.join()
+        assert model_executor.driver_worker is not None
+        model_executor.driver_worker.vectorlm_thread.join()
 
 
 if __name__ == "__main__":
@@ -112,9 +113,9 @@ if __name__ == "__main__":
 
     world_size: int = args.world_size
     vectorlm_config = Config(yaml_path=args.yaml_path)
-    sampler_config = vectorlm_config.train_parameters.sampler  # type: ignore[]
+    sampler_config = vectorlm_config.train_parameters.sampler  # type: ignore[reportAttributeAccessIssue]
     vllm_engine_config = EngineArgs(
-        model=vectorlm_config.model,  # type: ignore[]
+        model=vectorlm_config.model,  # type: ignore[reportAttributeAccessIssue]
         gpu_memory_utilization=sampler_config.get(
             "gpu_memory_utilization",
             0.35,
@@ -129,10 +130,10 @@ if __name__ == "__main__":
     # threads as long as vLLM tasks are running.
     barriers = SynchronizationBarriers(
         # (n+1) threads: __main__, and n vectorlm threads (including main).
-        mp.Barrier(world_size + 1),
+        vllm_init=mp.Barrier(world_size + 1),
         # n vectorlm threads.
-        mp.Barrier(world_size),
-        mp.Barrier(world_size),
+        before_generation=mp.Barrier(world_size),
+        after_generation=mp.Barrier(world_size),
     )
     vllm_result_handler = ResultHandler()
 

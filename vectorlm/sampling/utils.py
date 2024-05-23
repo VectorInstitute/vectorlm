@@ -3,34 +3,21 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
-from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Iterable, NamedTuple, TypeVar
 
 from vllm import LLM
 from vllm.executor.multiproc_gpu_executor import MultiprocessingGPUExecutor
-from vllm.executor.multiproc_worker_utils import (
-    ResultHandler,
-    WorkerMonitor,
-)
-from vllm.utils import (
-    Counter,
-    get_distributed_init_method,
-    get_ip,
-    get_open_port,
-    get_vllm_instance_id,
-)
-from vllm.worker.worker import Worker
+from vllm.utils import Counter
 
 from .abstract import AbstractSamplingEngine
-from .vllm_worker_utils import ManagedProcessWorkerWrapper
 
 if TYPE_CHECKING:
     from threading import Barrier
 
     from vllm import LLMEngine, SamplingParams
+    from vllm.worker.worker_base import WorkerBase
 
 
 class SampleOutput(NamedTuple):
@@ -69,110 +56,38 @@ class SynchronizationBarriers(NamedTuple):
 class ManagedMultiProcGPUExecutor(MultiprocessingGPUExecutor):
     """MultiProcGPUExecutor, but with VectorLM supplied."""
 
+    # only missing parameter in vectorlm_fn is local_rank.
     vectorlm_fn: Callable[[int], None]
 
-    def _init_executor(self) -> None:
-        """Launch vectorlm logic in workers.
+    def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002,ANN003
+        """Copy vectorlm_fn into this instance."""
+        self.vectorlm_fn = ManagedMultiProcGPUExecutor.vectorlm_fn
+        super().__init__(*args, **kwargs)
 
-        Supply barriers and pickle-compatible vectorlm main fn to
-        workers via vLLM multiprocessing messaging mechanisms.
+    def _create_worker(
+        self,
+        local_rank: int = 0,
+        *args,  # noqa: ANN002
+        **kwargs,  # noqa: ANN003
+    ) -> WorkerBase:
+        """Instantiate worker and launch vectorlm thread.
+
+        For rank 0, this method is invoked "blocking" inside the rank-0 process.
+
+        For rank != 0, this method is supposed to be invoked in a child process
+        spawned from the main rank-0 process.
         """
-        assert (
-            not self.speculative_config
-        ), "Speculative decoding not yet supported for MultiProcGPU backend."
-
-        # Create the parallel GPU workers.
-        world_size = self.parallel_config.tensor_parallel_size
-
-        # Set CUDA_VISIBLE_DEVICES for the driver, inherited by workers
-        if "CUDA_VISIBLE_DEVICES" not in os.environ:
-            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(
-                map(str, range(world_size))
-            )
-
-        # Ensure that VLLM_INSTANCE_ID is set, to be inherited by workers
-        os.environ["VLLM_INSTANCE_ID"] = get_vllm_instance_id()
-
-        from torch.cuda import device_count
-
-        assert (
-            world_size <= device_count()
-        ), "please set tensor_parallel_size to less than max local gpu count"
-
-        distributed_init_method = get_distributed_init_method(
-            get_ip(), get_open_port()
+        vectorlm_thread = threading.Thread(
+            target=self.vectorlm_fn,
+            kwargs={"local_rank": local_rank},
         )
+        vectorlm_thread.start()
 
-        if world_size == 1:
-            self.workers = []
-        else:
-            result_handler = ResultHandler()
-            self.workers = [
-                ManagedProcessWorkerWrapper(
-                    result_handler,
-                    partial(
-                        self._create_worker,
-                        rank=rank,
-                        local_rank=rank,
-                        distributed_init_method=distributed_init_method,
-                    ),
-                    partial(self.vectorlm_fn, rank),
-                )
-                for rank in range(1, world_size)
-            ]
+        worker = super()._create_worker(*args, **kwargs, local_rank=local_rank)
+        assert worker is not None
+        worker.vectorlm_thread = vectorlm_thread
 
-            self.worker_monitor = WorkerMonitor(self.workers, result_handler)
-            result_handler.start()
-            self.worker_monitor.start()
-
-        self.driver_worker = self._create_worker(
-            distributed_init_method=distributed_init_method,
-        )
-        self.rank_0_vectorlm_thread = threading.Thread(
-            target=partial(self.vectorlm_fn, 0),
-        )
-        self.rank_0_vectorlm_thread.start()
-
-        self._run_workers("init_device")
-        self._run_workers(
-            "load_model",
-            max_concurrent_workers=self.parallel_config.max_parallel_loading_workers,
-        )
-
-
-class VectorLMWorker(Worker):
-    """Worker for running VectorLM logic alongside vLLM worker.
-
-    Use this instance for the rank 0 (root) process.
-
-    Note that nccl requires that only one process may have access
-    to each GPU. Each LocalWorkerVllm is a multiprocessing.Process.
-    Vectorlm logic would be launched as a thread within each of these
-    proceses.
-
-    Spawn no more than one such instance for each GPU.
-
-    Attributes
-    ----------
-        vectorlm_thread: threading.Thread.
-
-    """
-
-    barriers: SynchronizationBarriers
-    vectorlm_fn: Callable[[SynchronizationBarriers, int], None]
-
-    def launch_vectorlm(self) -> None:
-        """Launch vectorlm logic in a separate thread.
-
-        Params:
-        ------
-             vectorlm_fn: VectorLM logic. Requires no argument. Be sure to
-                populate all arguments via functools.partial.
-            barriers: SynchronizationBarriers for synchronizing VectorLM
-                and vLLM access to NCCL.
-        """
-        assert hasattr(self, "barriers")
-        assert hasattr(self, "vectorlm_fn")
+        return worker
 
 
 class ManagedLLM(LLM):
@@ -269,7 +184,7 @@ def multiprocess_wrap(fn: Fn, barriers: SynchronizationBarriers) -> Fn:
     def _wrapped_fn(*args, **kwargs) -> ...:  # noqa: ANN002,ANN003
         barriers.after_generation.wait()
 
-        import torch.distributed
+        import torch.distributed  # type: ignore[reportMissingImports]
 
         rank = torch.distributed.get_rank()
 
@@ -288,4 +203,4 @@ def multiprocess_wrap(fn: Fn, barriers: SynchronizationBarriers) -> Fn:
         torch.distributed.broadcast_object_list(output)
         return output[0]
 
-    return _wrapped_fn  # type: ignore[]
+    return _wrapped_fn  # type: ignore[reportReturnType]
