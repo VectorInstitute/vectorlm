@@ -54,13 +54,18 @@ class SynchronizationBarriers(NamedTuple):
 
 
 class ManagedMultiProcGPUExecutor(MultiprocessingGPUExecutor):
-    """MultiProcGPUExecutor, but with VectorLM supplied."""
+    """MultiProcGPUExecutor, but with VectorLM launched alongside vLLM."""
 
     # only missing parameter in vectorlm_fn is local_rank.
     vectorlm_fn: Callable[[int], None]
 
     def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002,ANN003
-        """Copy vectorlm_fn into this instance."""
+        """Copy class variable vectorlm_fn into this instance.
+
+        Doing so ensures that spawned sub-processes also have access
+        to vectorlm_fn, which might not otherwise be accessible as a class
+        variable.
+        """
         self.vectorlm_fn = ManagedMultiProcGPUExecutor.vectorlm_fn
         super().__init__(*args, **kwargs)
 
@@ -196,7 +201,7 @@ def multiprocess_wrap(fn: Fn, barriers: SynchronizationBarriers) -> Fn:
             output = [fn(*args, **kwargs)]
 
         # fn might access torch.dist, which might conflict with
-        # broadcast_object_list. Hence, keep all ranks witing until fn returns.
+        # broadcast_object_list. Hence, keep all ranks witing until fn returns
         # on rank 0.
         barriers.before_generation.wait()
 
