@@ -85,7 +85,6 @@ def main(
     world_size = int(os.environ["WORLD_SIZE"])
 
     print(f"Rank: {rank}, World size: {world_size}")
-
     if dist.is_initialized():
         torch.cuda.set_device(local_rank)
         torch.cuda.empty_cache()
