@@ -58,9 +58,7 @@ class LoRASamplingEngine(AbstractSamplingEngine):
             generate_fn_raw = vllm_llm.generate
         else:
             # placeholder, as the wrapped_fn won't be invoked outside rank-0.
-            generate_fn_raw: Callable[..., list[vllm.RequestOutput]] = (
-                lambda: None
-            )  # type: ignore[reportAssignmentType]
+            generate_fn_raw = None
 
         self.generate_fn = multiprocess_wrap(generate_fn_raw, self.barriers)
         self.vllm_train_step = -1

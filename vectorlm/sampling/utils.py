@@ -61,7 +61,7 @@ class SynchronizationBarriers(NamedTuple):
 Fn = TypeVar("Fn", bound=Callable[..., Any])
 
 
-def multiprocess_wrap(fn: Fn, barriers: SynchronizationBarriers) -> Fn:
+def multiprocess_wrap(fn: Fn | None, barriers: SynchronizationBarriers) -> Fn:
     """Apply barrier to function and broadcast output.
 
     This wrapper function tries to preserve the type signature
@@ -70,13 +70,16 @@ def multiprocess_wrap(fn: Fn, barriers: SynchronizationBarriers) -> Fn:
     While fn would be invoked only on rank 0, the wrapped function
     should be invoked in the vectorlm thread at all ranks, so that
     the barriers would block these threads from accessing GPU while
-    the fn is running.
+    the fn is running. However, only the fn specified at rank 0
+    will actually be executed. The fn parameter can be None at all
+    other ranks.
 
     Each rank would receive the same value as output.
 
     Params:
     -------
         fn: Function to wrap. Output needs to be compatible with pickle.
+            This arg is required only on rank 0.
         barriers: SynchronizationBarriers, only the before_generation and
             after_generation barriers are required..
 
@@ -99,6 +102,7 @@ def multiprocess_wrap(fn: Fn, barriers: SynchronizationBarriers) -> Fn:
         # torch requires placeholder element in object list.
         output = [None]
         if rank == 0:
+            assert fn is not None
             output = [fn(*args, **kwargs)]
 
         # fn might access torch.dist, which might conflict with
