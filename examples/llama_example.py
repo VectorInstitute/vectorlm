@@ -89,12 +89,11 @@ def main(
     if dist.is_initialized():
         torch.cuda.set_device(local_rank)
         torch.cuda.empty_cache()
-    else:
-        dist.init_process_group()
 
     # setup wandb
     if rank == 0 and config.enable_wandb_logging:
         wandb_setup(config, **config.wandb_config)
+    dist.barrier()
 
     # load model and tokenizer
     model, tokenizer = load_model_and_tokenizer(

@@ -1,4 +1,4 @@
-"""Wrapper around sampling engine."""
+"""Wrapper around vLLM. Also handles synchronization."""
 
 from __future__ import annotations
 

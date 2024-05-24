@@ -12,8 +12,7 @@ setup is to block the vectorlm thread with a multiprocessing synchronization
 feature (e.g., a Barrier shared across all processes) that the rank 0 process
 can remotely unblock.
 
-Edit: It seems that vllm.entrypoint.llm.LLM generate calls aren't
-entirely blocking.
+See https://docs.google.com/presentation/d/1FCa5O8RYYkRRCAAcXhqCvomePo5fEfhjQciSteTEJ30
 """
 
 from __future__ import annotations
@@ -68,7 +67,8 @@ if __name__ == "__main__":
 
     # rank 0 worker runs in the __main__ process.
     # all other ranks use one process each.
-    # vectorlm logic in each ranks (including rank 0) is in a separate thread.
+    # vectorlm logic in each ranks (including rank 0) is in a separate thread
+    # from the vLLM worker logic.
     vllm_callback_wrapper = SamplingEngineProvider(
         vllm_engine_config,
         barriers,

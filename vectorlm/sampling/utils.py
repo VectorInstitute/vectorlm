@@ -118,7 +118,7 @@ class ManagedMultiProcGPUExecutor(MultiprocessingGPUExecutor):
     This class is compatible as an "executor_class" for the vLLM Engine.
 
     NCCL requires exactly one process for each GPU, so the vLLM and VectorLM
-    on each GPU logic need to fit into the same process.
+    logic on each GPU need to fit into the same process.
 
     This class ensures that in each of these one-per-GPU processes,
     VectorLM logic would run in a separate thread alongside the vLLM Worker.
