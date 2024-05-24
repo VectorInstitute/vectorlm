@@ -7,7 +7,7 @@ wandb_config:
   # tags: ["20240418-1a-preemption"]
 
 train_parameters:
-  output_dir: /network/scratch/j/jacob-junqi.tian/vectorlm/weights
+  output_dir: weights
   max_seq_len: 128
   epochs: 10
   seed: 11
