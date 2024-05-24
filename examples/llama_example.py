@@ -12,10 +12,8 @@ import torch.distributed as dist
 from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import set_seed
-from vllm import SamplingParams
 
 from vectorlm.dataset import Dataset
-from vectorlm.sampling import LoRASamplingEngine
 from vectorlm.trainer import Trainer
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.misc_utils import cleanup, setup, wandb_setup
@@ -34,9 +32,7 @@ from vectorlm.utils.save_utils import (
 )
 
 if TYPE_CHECKING:
-    from vllm import LLM
-
-    from vectorlm.sampling.utils import SynchronizationBarriers
+    from vectorlm.sampling.utils import AbstractSamplingEngine
 
 
 def parse_args() -> Namespace:
@@ -58,50 +54,43 @@ def parse_args() -> Namespace:
 
 def main(
     config: Config,
-    world_size: int | None = None,
-    get_vllm_llm: Callable[[], LLM] | None = None,
-    barriers: SynchronizationBarriers | None = None,
-    local_rank: int | None = None,
+    get_sampling_engine: Callable[[], AbstractSamplingEngine] | None = None,
 ) -> None:
     """Define the main calling function.
+
+    WORLD_SIZE, LOCAL_RANK, and RANK are retrieved from environment vars.
 
     Args:
     ----
         config: vectorlm config, e.g., loaded from yaml
-        world_size: number of processes.
-        get_vllm_llm: required only for root process (rank 0).
-        barriers: SynchronizationBarriers, required for all processes.
-        local_rank: int, where 0 is root process, one process per accelerator.
+        get_sampling_engine: optional, blocking function that initializes the
+            sampling engine. Required if sampling during training is needed.
+            This method is provided in _VLLMCallbackWrapper. To avoid concurrent
+            nccl access, be sure to invoke this method before any torch method
+            that might also access nccl.
 
     """
-    if barriers is not None:
-        # Wait until vllm engine is fully initialized.
-        print(f"rank {local_rank} vllm_init_barrier wait")
-        barriers.vllm_init.wait()
-        print(f"rank {local_rank} vllm_init_barrier cleared")
+    sampling_engine = (
+        get_sampling_engine() if get_sampling_engine is not None else None
+    )
 
     training_args = config.train_parameters
-    sampler_config = training_args.get("sampler")
 
     # set a seed
     set_seed(training_args.seed)
 
+    # set CUDA related dependencies
+    local_rank = int(os.environ["LOCAL_RANK"])
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+
+    print(f"Rank: {rank}, World size: {world_size}")
+
     if dist.is_initialized():
         torch.cuda.set_device(local_rank)
         torch.cuda.empty_cache()
-
-    # set CUDA related dependencies
-    if (local_rank is None) or (world_size is None):
-        local_rank = int(os.environ["LOCAL_RANK"])
-        rank = int(os.environ["RANK"])
-        world_size = int(os.environ["WORLD_SIZE"])
     else:
-        rank = local_rank  # modify if going beyond one node.
-        os.environ["LOCAL_RANK"] = str(local_rank)
-        os.environ["RANK"] = str(local_rank)
-        os.environ["WORLD_SIZE"] = str(world_size)
-
-    print(f"Rank: {rank}, World size: {world_size}")
+        dist.init_process_group()
 
     # setup wandb
     if rank == 0 and config.enable_wandb_logging:
@@ -154,6 +143,9 @@ def main(
         training_args.low_cpu_mem_usage,
         is_lora_enabled,
     )
+    # Trigger FSDP initialization before retrieving weights.
+    # Otherwise FSDP is_root flag might be set incorrectly.
+    model(input_ids=torch.zeros((1, 1), dtype=torch.int))
 
     # load dataset
     dataset = Dataset(
@@ -190,23 +182,9 @@ def main(
         dataset,
         optimizer,
         lr_scheduler,
+        sampling_engine,
         is_peft_adapter_restored,
     )
-
-    if sampler_config is not None:
-        # vllm_llm is required only on rank 0.
-        vllm_llm = (
-            get_vllm_llm()
-            if (get_vllm_llm is not None) and (rank == 0)
-            else None
-        )
-        sampling_engine = LoRASamplingEngine(
-            trainer,
-            vllm_llm,  # required only for rank 0
-            SamplingParams(seed=0, temperature=0),
-            barriers,
-        )
-        trainer.sampling_engine = sampling_engine
 
     # Checkpoint check. Always call before training.
     # If no checkpoint, it returns 0.

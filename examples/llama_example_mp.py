@@ -19,91 +19,19 @@ entirely blocking.
 from __future__ import annotations
 
 import argparse
+import os
 from functools import partial
-from typing import Callable
 
 from llama_example import main
-from vllm.engine.arg_utils import EngineArgs, EngineConfig
-from vllm.engine.llm_engine import LLMEngine
-from vllm.entrypoints.llm import LLM
+from vllm import EngineArgs
 from vllm.executor.multiproc_worker_utils import ResultHandler, mp
 
-from vectorlm.sampling.utils import (
-    ManagedLLM,
-    ManagedMultiProcGPUExecutor,
+from vectorlm.sampling import (
+    LoRASamplingEngine,
+    SamplingEngineProvider,
     SynchronizationBarriers,
 )
 from vectorlm.utils.data_utils import Config
-
-
-class _VLLMCallbackWrapper:
-    """Provide vLLM Engine access to multiprocess.Process workers.
-
-    vLLM engine is initialized only after the initialize_engine call.
-    """
-
-    def __init__(
-        self,
-        engine_config: EngineConfig,
-        vectorlm_config: Config,
-        world_size: int,
-        barriers: SynchronizationBarriers,
-    ) -> None:
-        """Instantiate class without initializing wrapped vLLM engine."""
-        self.llm_engine: LLMEngine | None = None
-        self.llm: LLM | None = None
-        self.engine_config = engine_config
-        self.barriers = barriers
-
-        # Only missing args is local_rank.
-        self.vectorlm_fn: Callable[[int], None] = partial(
-            main,
-            vectorlm_config,
-            world_size,
-            self.get_vllm_llm,
-            self.barriers,
-        )
-
-    def initialize_engine(self) -> None:
-        """Initialize vLLM engine.
-
-        Invoke this method only after vLLM workers are all ready.
-        """
-        ManagedMultiProcGPUExecutor.vectorlm_fn = self.vectorlm_fn
-
-        self.llm_engine = LLMEngine(
-            **self.engine_config.to_dict(),
-            executor_class=ManagedMultiProcGPUExecutor,
-            log_stats=False,
-        )
-
-        self.llm = ManagedLLM(self.llm_engine)
-        print(f"Instantiated ManagedLLM: {self.llm}")
-
-    def get_vllm_llm(self) -> LLM:
-        """Return LLM instance.
-
-        Invoke this method only within the main (rank 0 driver) process.
-        """
-        assert (
-            self.llm is not None
-        ), "Must finish initialize_engine before starting vectorlm logic."
-
-        llm = self.llm
-        assert llm is not None
-        return llm
-
-    def join_vectorlm_thread(self) -> None:
-        """Join the rank 0 (main process) vectorlm thread.
-
-        Invoke this function only after initialize_engine.
-        """
-        assert self.llm_engine is not None
-        model_executor = self.llm_engine.model_executor
-        assert isinstance(model_executor, ManagedMultiProcGPUExecutor)
-        assert model_executor.driver_worker is not None
-        model_executor.driver_worker.vectorlm_thread.join()
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -124,6 +52,7 @@ if __name__ == "__main__":
         dtype=sampler_config.get("vllm_dtype", "auto"),
         enable_lora=True,
     ).create_engine_config()
+    os.environ["WORLD_SIZE"] = str(world_size)
 
     # Block all N vectorlm threads until main process finished
     # initializing vLLM Engine. Additionally, block vectorlm
@@ -140,20 +69,16 @@ if __name__ == "__main__":
     # rank 0 worker runs in the __main__ process.
     # all other ranks use one process each.
     # vectorlm logic in each ranks (including rank 0) is in a separate thread.
-    vllm_callback_wrapper = _VLLMCallbackWrapper(
+    vllm_callback_wrapper = SamplingEngineProvider(
         vllm_engine_config,
-        vectorlm_config,
-        world_size,
         barriers,
+        LoRASamplingEngine,
+        partial(main, vectorlm_config),
     )
 
     vllm_callback_wrapper.initialize_engine()
     assert vllm_callback_wrapper.llm is not None
     output = vllm_callback_wrapper.llm.generate("Vector Institute is")
     print(output[0].prompt + output[0].outputs[0].text)
-
-    print("main: vllm_init_barrier waiting")
-    barriers.vllm_init.wait()
-    print("main: vllm_init_barrier cleared")
 
     vllm_callback_wrapper.join_vectorlm_thread()

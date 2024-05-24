@@ -123,6 +123,7 @@ class Trainer:
         dataset: Dataset,
         optimizer: Optimizer,
         lr_scheduler: LRScheduler | ReduceLROnPlateau,
+        sampling_engine: AbstractSamplingEngine | None = None,
         is_peft_adapter_restored: bool = False,
     ) -> None:
         """Set all essential training requirements.
@@ -135,6 +136,9 @@ class Trainer:
             optimizer: The training optimizer.
             lr_scheduler: The LR scheduler.
 
+            sampling_engine: Optionally, provide a sampling engine to enable
+                sampling during training.
+
             is_peft_adapter_restored: whether peft is enabled and
                 adapters were restored from filesystem.
 
@@ -144,6 +148,8 @@ class Trainer:
         self.dataset = dataset
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
+
+        self.sampling_engine = sampling_engine
 
         self.is_peft_adapter_restored = is_peft_adapter_restored
 
@@ -282,7 +288,7 @@ class Trainer:
         if (self.sampling_engine is not None) and (
             self.tr_step % self.config.sampler.sample_frequency == 0
         ):
-            self.sampling_engine.update(self)
+            self.sampling_engine.update(self.model, self.tr_step)
             handle_sample(
                 self.sampling_engine,
                 self.config.sampler.prompts,

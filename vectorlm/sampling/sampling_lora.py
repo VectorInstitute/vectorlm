@@ -14,7 +14,7 @@ from .abstract import AbstractSamplingEngine
 from .utils import SynchronizationBarriers, multiprocess_wrap
 
 if TYPE_CHECKING:
-    from vectorlm.trainer import Trainer
+    from peft.peft_model import PeftModel
 
 
 class LoRASamplingEngine(AbstractSamplingEngine):
@@ -22,7 +22,6 @@ class LoRASamplingEngine(AbstractSamplingEngine):
 
     def __init__(
         self,
-        trainer: Trainer,
         vllm_llm: vllm.LLM | None = None,
         sampling_params: vllm.SamplingParams | None = None,
         synchronization_barriers: SynchronizationBarriers | None = None,
@@ -31,7 +30,6 @@ class LoRASamplingEngine(AbstractSamplingEngine):
         """Initialize sampling engine.
 
         Params:
-            trainer: Trainer instance.
             vllm_llm: Instance of vllm.LLM, required only for rank 0.
             sampling_params: Optionally, specify default sampling params.
             adapter_temp_folder: Temporary path where temporary adapter weights
@@ -62,37 +60,22 @@ class LoRASamplingEngine(AbstractSamplingEngine):
             # placeholder, as the wrapped_fn won't be invoked outside rank-0.
             generate_fn_raw: Callable[..., list[vllm.RequestOutput]] = (
                 lambda: None
-            )  # type: ignore []
+            )  # type: ignore[reportAssignmentType]
 
         self.generate_fn = multiprocess_wrap(generate_fn_raw, self.barriers)
-
-        # Trigger FSDP initialization before retrieving weights.
-        # Otherwise FSDP is_root flag might be set incorrectly.
-        _wrapped_model = trainer.model
-        assert _wrapped_model is not None
-        _wrapped_model(input_ids=torch.zeros((1, 1), dtype=torch.int))
         self.vllm_train_step = -1
 
-        self.update(trainer)
-
-    def update(self, trainer: Trainer | None = None) -> None:
-        """Inform the sampling engine that the model in trainer is updated.
+    def update(self, model: PeftModel, train_step: int) -> None:
+        """Update model in sampling engine if the current copy is stale.
 
         Params:
-            trainer: Optionally, replace self.trainer with the provided value.
+            model: PeftModel, up-to-date model
+            train_step: int, train step of the given model.
         """
-        if trainer is not None:
-            self.trainer = trainer
-
-        wrapped_model = self.trainer.model
-        assert wrapped_model is not None
-
         self.barriers.before_generation.wait()
-        if self.vllm_train_step != self.trainer.tr_step:
-            save_peft_adapter(wrapped_model, self.adapter_temp_folder)
-            assert self.trainer.tr_step is not None
-            assert self.trainer.tr_step >= 0
-            self.vllm_train_step = self.trainer.tr_step
+        if self.vllm_train_step != train_step:
+            save_peft_adapter(model, self.adapter_temp_folder)
+            self.vllm_train_step = train_step
             self.lora_request = LoRARequest(
                 "_vectorlm",
                 self.vllm_train_step + 1,

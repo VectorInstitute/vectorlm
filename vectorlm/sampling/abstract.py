@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import vllm
 
 if TYPE_CHECKING:
+    import torch
     from vectorlm.trainer import Trainer
 
     from .utils import SynchronizationBarriers
@@ -18,7 +19,6 @@ class AbstractSamplingEngine(ABC):
 
     def __init__(
         self,
-        trainer: Trainer,
         vllm_llm: vllm.LLM | None = None,
         sampling_params: vllm.SamplingParams | None = None,
         synchronization_barriers: SynchronizationBarriers | None = None,
@@ -26,26 +26,28 @@ class AbstractSamplingEngine(ABC):
         """Initialize sampling engine.
 
         Params:
-            trainer: Trainer instance.
             vllm_llm: Instance of vllm.LLM, required only for rank 0.
             sampling_params: Optionally, specify default sampling params.
             synchronization_barriers: Optionally, supply barriers to
                 prevent workers from accessing GPU while vLLM is running.
 
         """
-        self.trainer = trainer
         self.vllm_llm = vllm_llm
         self.sampling_params = sampling_params
         self.synchronization_barriers = synchronization_barriers
+        self.vllm_train_step = -1
 
-    def update(self, trainer: Trainer | None = None) -> None:
-        """Inform the sampling engine that the model in trainer is updated.
+    @abstractmethod
+    def update(self, model: torch.nn.Module, train_step: int) -> None:
+        """Update model in sampling engine if the current copy is stale.
 
         Params:
-            trainer: Optionally, replace self.trainer with the provided value.
+            model: PeftModel, up-to-date model
+            train_step: int, train step of the given model.
         """
-        if trainer is not None:
-            self.trainer = trainer
+        if self.vllm_train_step != train_step:
+            # Update parameters of self.vllm_llm using the given `model``.
+            return
 
     @abstractmethod
     def generate(
