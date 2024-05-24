@@ -199,7 +199,6 @@ def main(
         ):
             batch = next(train_dl_iterator)
             trainer.step(batch, epoch)
-            dist.barrier()
 
         if epoch == training_args.epochs - 1:
             hf_save_dir = os.path.join(training_args.output_dir, "final-model")
