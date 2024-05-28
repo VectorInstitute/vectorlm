@@ -15,8 +15,13 @@ import pandas as pd
 
 Numbers = Union[int, float]
 NumericalTypes = Union[Numbers, np.ndarray]
-Numerical = TypeVar("Numerical", bound=NumericalTypes)
+V = TypeVar("V")
 Aggregator = TypeVar("Aggregator")
+Numerical = TypeVar("Numerical", bound=NumericalTypes)
+
+
+# Skip first N train steps (warmup, profiling, etc.) in throughput eval.
+NUM_SKIPPED_STEPS = 80
 
 
 @dataclass
@@ -97,7 +102,7 @@ def _reduce_metric(
 
 
 def get_quantiles(values: list[Numbers]) -> np.ndarray:
-    """Given a list of numerical values, return (min, 25%, 50%, 75%, and max).
+    """Given a list of numerical values, return (min, 25%, 50%, 75%, 95%, max).
 
     Params
     ------
@@ -108,9 +113,14 @@ def get_quantiles(values: list[Numbers]) -> np.ndarray:
         np.ndarray.
 
     """
+    percentiles = [0.25, 0.5, 0.75, 0.95]
+
+    if len(values) == 0:
+        return [np.nan] * (1 + len(percentiles) + 1)
+
     output_list = [
         np.min(values),
-        *[np.percentile(values, q) for q in [0.25, 0.5, 0.75]],
+        *[np.percentile(values, q) for q in percentiles],
         np.max(values),
     ]
 
@@ -137,8 +147,11 @@ for jsonl_filename in benchmark_jsonl_list:
 
 # Set of tuples the form (model_name, device)
 benchmarked_combinations: set[tuple[str, str]] = set()
-aggregated_output: dict[tuple[str, str], RunningAverage] = defaultdict(
-    lambda: RunningAverage(),
+# Map (model, device) pair to dict mapping (batch_size, seq_len) to aggregator.
+aggregated_output: dict[tuple[str, str], dict[str, RunningAverage]] = (
+    defaultdict(
+        lambda: defaultdict(lambda: RunningAverage()),
+    )
 )
 profiler_tables = defaultdict(dict)
 
@@ -161,15 +174,15 @@ for raw_benchmark in raw_benchmarks:
         benchmark_output[name] = new_value
 
     model_name = benchmark_output.get("model_name")
+    context_window = benchmark_output.get("max_length")
     if model_name is None:
         continue
 
     model_name = model_name.split("/")[-1]
+    model_name = f"{model_name} ({context_window})"
     source_filename = benchmark_output["_source"]
 
     peft_method = benchmark_output.get("peft_method")
-    if peft_method == "lora" and model_name == "gemma-2b":
-        print(source_filename)
     if peft_method is None:
         continue
 
@@ -181,7 +194,7 @@ for raw_benchmark in raw_benchmarks:
         world_size = device_info["world_size"]
     device_description = f"({peft_method}) {device_name} x{world_size}"
 
-    # Training throughput can be noisy. Report quantiles instead of avg,
+    # Training throughput can be noisy. Report median throughput,
     # and discard instances with only one training step logged.
     train_step = benchmark_output.get("train_step")
     if train_step is not None:
@@ -189,9 +202,11 @@ for raw_benchmark in raw_benchmarks:
         time_elapsed = np.asarray(train_step["time_elapsed"])
         if num_tokens.flatten().shape[0] > 1:
             train_throughput = get_quantiles(
-                world_size * num_tokens / time_elapsed,
+                (num_tokens / time_elapsed)[NUM_SKIPPED_STEPS:],
             )
-            aggregated_output[(model_name, device_description)].add(
+            aggregated_output[(model_name, device_description)][
+                "batch: " + str(benchmark_output.get("training_batch_size"))
+            ].add(
                 train_throughput[2],
             )
 
@@ -205,8 +220,26 @@ for raw_benchmark in raw_benchmarks:
 aggregated_output_nested = defaultdict(dict)
 for combination in benchmarked_combinations:
     model_name, device_description = combination
-    throughput = aggregated_output[combination].get_average()
-    aggregated_output_nested[model_name][device_description] = throughput
+    # there might be more than one run for each batch size option
+    # average median throughput over all runs for each option.
+    # report batch size that achieves optimal (avg) throughput.
+    throughput: list[tuple[NumericalTypes, str]] = [
+        (average, batch_size)
+        for (average, batch_size) in (
+            (aggregation.get_average(), batch_size)
+            for batch_size, aggregation in aggregated_output[
+                combination
+            ].items()
+        )
+        if average is not None
+    ]
+    if len(throughput) == 0:
+        continue
+
+    optimal_throughput, optimal_batch_size = sorted(throughput, reverse=True)[0]
+    aggregated_output_nested[model_name][device_description] = (
+        f"{optimal_throughput:.2f} ({optimal_batch_size})"
+    )
 
 
 throughput_table = (

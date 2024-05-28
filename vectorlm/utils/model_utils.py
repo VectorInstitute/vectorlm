@@ -76,7 +76,7 @@ def load_model_and_tokenizer(
     path: str,
     use_mp: bool,
     use_fa: bool,
-    max_seq_len: int,
+    max_seq_len: int | None,
     local_rank: int,
     low_cpu_mem_usage: bool,
     use_safetensors: bool = True,
@@ -88,7 +88,9 @@ def load_model_and_tokenizer(
         path: The path where the model and tokenizer are stored.
         use_mp: Whether to use mixed-precision.
         use_fa: Whether to use Flash Attention 2.
-        max_seq_len: The maximum sequence length.
+        max_seq_len: Override the maximum sequence length of the tokenizer.
+            Set to None or a negative value to fall back to the
+            `max_position_embeddings` value from the pretrained model config.
         local_rank: The local rank of the current worker.
         low_cpu_mem_usage: Whether to only load model weights on main rank, and
             then scatter them to the other workers.
@@ -129,7 +131,16 @@ def load_model_and_tokenizer(
     tokenizer = AutoTokenizer.from_pretrained(path)
     if not tokenizer.pad_token:
         tokenizer.pad_token_id = tokenizer.eos_token_id
-    tokenizer.model_max_length = max_seq_len
+    if (max_seq_len is not None) and (max_seq_len > 0):
+        tokenizer.model_max_length = max_seq_len
+    else:
+        if not hasattr(model.config, "max_position_embeddings"):
+            msg = (
+                "A concrete max_seq_len value is required in your training yaml"
+                "as max_position_embeddings is not specified in model config."
+            )
+            raise ValueError(msg)
+        tokenizer.model_max_length = model.config.max_position_embeddings
 
     # extend embeddings to a multiple so we use Tensor cores
     multiple = 64 if "A100" in torch.cuda.get_device_name() else 8

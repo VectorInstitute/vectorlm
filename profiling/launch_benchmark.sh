@@ -28,7 +28,7 @@ profiling/benchmark.py \
 --yaml_path $1 \
 --model_name $2 \
 --max_length $3 \
---training_batch_size $4
+--per_device_batch_size $4
 
 # clean up benchmarking artifacts as ops have requested
 rm -rf /dev/shm/lora-benchmark

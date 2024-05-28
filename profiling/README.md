@@ -13,7 +13,7 @@ $ python3 launch_benchmark.py
 # to accept and automatically invoke the commands.
 ```
 
-After the SLURM jobs complete, profiler output can be found under `data/benchmark`. Invoke the following the to generate a Markdown summary of the results:
+After the SLURM jobs complete, profiler output can be found under `data/benchmark`. Invoke the following the to generate a Markdown summary of the results. If the benchmark results include multiple different batch sizes for each (model, context window, hardware) pair, the table would list the "optimal" batch size associated with the highest training throughput for this combination.
 
 ```bash
 $ python3 profiling/parse_benchmark.py --folder data/benchmark

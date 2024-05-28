@@ -25,7 +25,6 @@ from vectorlm.utils.misc_utils import cleanup, setup, wandb_setup
 from vectorlm.utils.model_utils import (
     get_lora_model_from_base_model,
     get_submodule_by_pattern,
-    hook_activation_checkpointing,
     load_model_and_tokenizer,
     shard_model,
 )
@@ -67,7 +66,7 @@ def parse_args() -> Namespace:
         default=1000,
     )
     parser.add_argument("--max_length", type=int)
-    parser.add_argument("--training_batch_size", type=int)
+    parser.add_argument("--per_device_batch_size", type=int)
     return parser.parse_args()
 
 
@@ -273,9 +272,26 @@ if __name__ == "__main__":
 
     setup(config.train_parameters.output_dir)
 
-    if args.training_batch_size is not None:
-        config.dataset.train_bs = args.training_batch_size
-        write_metrics("training_batch_size", args.training_batch_size)
+    training_args = config.train_parameters
+
+    # set a seed
+    set_seed(training_args.seed)
+
+    # set CUDA related dependencies
+    local_rank = int(os.environ["LOCAL_RANK"])
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+
+    if args.per_device_batch_size is not None:
+        config.dataset.train_bs = args.per_device_batch_size
+        config.dataset.eval_bs = args.per_device_batch_size
+
+    write_metrics("training_batch_size", config.dataset.train_bs)
+    write_metrics("eval_batch_size", config.dataset.eval_bs)
+    write_metrics(
+        "training_batch_size_global",
+        config.dataset.train_bs * world_size,
+    )
 
     print(f"Writing metrics to {output_path}")
     write_metrics("model_name", args.model_name)
@@ -291,16 +307,6 @@ if __name__ == "__main__":
         repeat=2,
     )
 
-    training_args = config.train_parameters
-
-    # set a seed
-    set_seed(training_args.seed)
-
-    # set CUDA related dependencies
-    local_rank = int(os.environ["LOCAL_RANK"])
-    rank = int(os.environ["RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
-
     with track_time("dist_init"):
         print(f"Rank: {rank}, World size: {world_size}")
         if dist.is_initialized():
@@ -314,17 +320,18 @@ if __name__ == "__main__":
 
     # load model and tokenizer
     lora_peft_config = config.train_parameters.get("lora_peft_config")
+    is_lora_enabled = lora_peft_config is not None
 
     with track_time("model_load"):
         model, tokenizer = load_model_and_tokenizer(
             args.model_name,
             training_args.use_mp,
             get_is_flash_attention_supported(),
-            training_args.max_seq_len,
+            args.max_length,
             local_rank,
             training_args.low_cpu_mem_usage,
         )
-        if lora_peft_config is not None:
+        if is_lora_enabled:
             print("Enabling LoRA Wrapper.")
             write_metrics("peft_method", "lora")
             model = get_lora_model_from_base_model(model, lora_peft_config)
@@ -348,11 +355,8 @@ if __name__ == "__main__":
             training_args.sharding_strategy,
             local_rank,
             training_args.low_cpu_mem_usage,
+            is_lora_enabled=is_lora_enabled,
         )
-
-    with track_time("set_activation_checkpointing"):
-        if training_args.use_activation_checkpointing:
-            hook_activation_checkpointing(model, decoder_layer_module)
 
     # load dataset
     with track_time("dataset_load"):
@@ -364,6 +368,10 @@ if __name__ == "__main__":
             max_length=args.max_length,
         )
 
+        print(
+            f"Sequence length: {dataset.max_length};"
+            f"Batch Size (per device): {config.dataset.train_bs}",
+        )
         write_metrics("max_length", dataset.max_length)
 
     # instantiate trainer
@@ -371,7 +379,6 @@ if __name__ == "__main__":
         config=training_args,
         enable_wandb_logging=config.enable_wandb_logging,
         original_dataset_length=dataset.original_length,
-        timer_handle=track_time,
     )
 
     # load optimizer
@@ -412,15 +419,18 @@ if __name__ == "__main__":
             trainer.model.train()
             train_dl_iterator = iter(dataset.train_dataloader)
             for _ in tqdm(
-                range(args.num_train_examples),
+                range(len(dataset.train_dataloader)),
                 disable=rank != 0,
                 file=sys.__stdout__,
             ):
                 batch = next(train_dl_iterator)
                 num_tokens = len(batch["input_ids"].flatten())
 
-                with track_time("train_step", {"num_tokens": num_tokens}):
-                    trainer.step(batch, epoch)
+                with track_time(
+                    "train_step",
+                    {"num_tokens": num_tokens * world_size},
+                ):
+                    trainer.train_step(batch, epoch)
 
                 profile_handle.step()
                 write_metrics(

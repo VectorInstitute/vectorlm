@@ -6,7 +6,6 @@ wandb_config:
 
 train_parameters:
   output_dir: /dev/shm/lora-benchmark
-  max_seq_len: 128
   epochs: 1
   seed: 11
 
