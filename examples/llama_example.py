@@ -14,7 +14,7 @@ from tqdm import tqdm
 from transformers import set_seed
 
 from vectorlm.dataset import Dataset
-from vectorlm.trainer import Trainer
+from vectorlm.trice import ICEMTrainer
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.misc_utils import cleanup, setup, wandb_setup
 from vectorlm.utils.model_utils import (
@@ -152,7 +152,7 @@ def main(
     )
 
     # instantiate trainer
-    trainer = Trainer(
+    trainer = ICEMTrainer(
         config=training_args,
         enable_wandb_logging=config.enable_wandb_logging,
         original_dataset_length=dataset.original_length,
@@ -186,33 +186,27 @@ def main(
 
     # Checkpoint check. Always call before training.
     # If no checkpoint, it returns 0.
-    checkpointed_epoch = trainer.find_checkpoint(training_args.output_dir)
+    trainer.model.train()
+    trainer.find_checkpoint(training_args.output_dir)
 
-    for epoch in range(checkpointed_epoch, training_args.epochs):
-        train_dl_iterator = iter(dataset.train_dataloader)
-        for _ in tqdm(
-            range(len(dataset.train_dataloader)),
-            disable=rank != 0,
-            file=sys.__stdout__,
-        ):
-            batch = next(train_dl_iterator)
-            trainer.step(batch, epoch)
+    pbar = tqdm(
+        range(config.train_parameters.epochs),
+        disable=rank != 0,
+        file=sys.__stdout__,
+        ncols=75,
+    )
+    for index in pbar:
+        eval_acc = 0
+        train_loss, eval_output = trainer.step({}, index)
+        eval_acc = eval_output if eval_output is not None else eval_acc
 
-        if epoch == training_args.epochs - 1:
-            hf_save_dir = os.path.join(training_args.output_dir, "final-model")
-        else:
-            hf_save_dir = os.path.join(
-                training_args.output_dir,
-                "checkpoints",
-                f"epoch_{epoch}",
-                "end-epoch-model",
-            )
+        pbar.set_description(f"{train_loss:.3f}, {eval_acc * 100:.0f}%")
 
-        if is_lora_enabled:
-            save_peft_adapter(trainer.model, hf_save_dir)
-        else:
-            save_consolidated_model(trainer.model, hf_save_dir, rank)
-        dataset.reset_dataloaders()
+    if is_lora_enabled:
+        save_peft_adapter(trainer.model, hf_save_dir)
+    else:
+        save_consolidated_model(trainer.model, hf_save_dir, rank)
+    dataset.reset_dataloaders()
 
     sys.exit(0)
 

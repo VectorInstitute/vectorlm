@@ -150,6 +150,8 @@ class Trainer:
         self.lr_scheduler = lr_scheduler
 
         self.sampling_engine = sampling_engine
+        if self.sampling_engine is not None:
+            self.sampling_engine.update(self.model, self.tr_step)
 
         self.is_peft_adapter_restored = is_peft_adapter_restored
 

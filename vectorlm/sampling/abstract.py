@@ -59,6 +59,10 @@ class AbstractSamplingEngine(ABC):
 
         Invoke at all ranks. Output will be broadcasted to all ranks.
 
+        Only one thread should execute this method at a time. For performance,
+        supply a large number of prompts at a time instead of one prompt
+        at a time.
+
         Params:
         ------
             prompts: List of input prompts.
@@ -70,3 +74,14 @@ class AbstractSamplingEngine(ABC):
             Output from vllm: list[vllm.RequestOutput], one for each prompt.
 
         """
+
+    def generate_text_only(
+        self,
+        prompts: list[str],
+        sampling_params: vllm.SamplingParams | None = None,
+    ) -> list[str]:
+        """Generate and return text only."""
+        return [
+            response.outputs[0].text
+            for response in self.generate(prompts, sampling_params)
+        ]

@@ -5,6 +5,7 @@ from .utils import (
     ManagedMultiProcGPUExecutor,
     SamplingEngineProvider,
     SynchronizationBarriers,
+    batch_process,
     handle_sample,
     multiprocess_wrap,
 )

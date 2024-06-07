@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import threading
 import time
 from functools import partial
-from typing import TYPE_CHECKING, Any, Callable, Iterable, NamedTuple, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Iterable,
+    Iterator,
+    NamedTuple,
+    TypeVar,
+)
 
 from vllm import LLM, LLMEngine, SamplingParams
 from vllm.engine.arg_utils import EngineConfig
@@ -59,6 +68,8 @@ class SynchronizationBarriers(NamedTuple):
 
 
 Fn = TypeVar("Fn", bound=Callable[..., Any])
+InputItem = TypeVar("InputItem")
+OutputItem = TypeVar("OutputItem")
 
 
 def multiprocess_wrap(fn: Fn | None, barriers: SynchronizationBarriers) -> Fn:
@@ -114,6 +125,35 @@ def multiprocess_wrap(fn: Fn | None, barriers: SynchronizationBarriers) -> Fn:
         return output[0]
 
     return _wrapped_fn  # type: ignore[reportReturnType]
+
+
+def batch_process(
+    input_data: Iterable[InputItem],
+    fn: Callable[[Iterable[InputItem]], Iterable[OutputItem]],
+    max_batch_size: int,
+) -> Iterator[OutputItem]:
+    """Process input data one batch at a time.
+
+    Params:
+    ------
+        input_data: iterator of data to enter into fn.
+        fn: function that accepts a batch of data and produces
+            an output of equal length.
+        max_batch_size: maximum size of a batch.
+
+    Yields
+    ------
+        Iterator of output.
+
+    """
+    input_batch: list[InputItem] = []
+    for input_item in input_data:
+        input_batch.append(input_item)
+        if len(input_batch) == max_batch_size:
+            yield from fn(input_batch)
+            input_batch = []
+
+    yield from fn(input_batch)
 
 
 class ManagedMultiProcGPUExecutor(MultiprocessingGPUExecutor):

@@ -1,4 +1,4 @@
-model: google/gemma-2b
+model: google/gemma-2b-it
 enable_wandb_logging: False
 
 wandb_config:
@@ -7,9 +7,9 @@ wandb_config:
   # tags: ["20240418-1a-preemption"]
 
 train_parameters:
-  output_dir: weights
-  max_seq_len: 128
-  epochs: 10
+  output_dir: /network/scratch/j/jacob-junqi.tian/vectorlm/weights
+  max_seq_len: 1024
+  epochs: 100000
   seed: 11
 
   # Sharding strategy
@@ -33,10 +33,11 @@ train_parameters:
   # Gradient norm clipping
   max_grad_norm: 1
   gradient_accumulation_steps: 4
+  batch_size: 2
 
   # Optimizer
   optimizer:
-    lr: 1.0e-4
+    lr: 2.0e-5
     weight_decay: 0.1
     betas: [0.9, 0.95]
     eps: 1.0e-5
@@ -47,7 +48,7 @@ train_parameters:
 
   # Checkpointing
   checkpointing_enabled: False
-  logging_steps: 10
+  logging_steps: 100
   save_frequency: 0.10
 
   # Sampling during training
