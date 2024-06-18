@@ -35,6 +35,23 @@ if TYPE_CHECKING:
     from vectorlm.sampling.utils import AbstractSamplingEngine
 
 
+SAMPLER_NOT_PROVIDED_ERROR_MSG = """
+Hot-swap sampling is enabled but sampler engine is not provided. \
+Did you launch this script via `torchrun llama_example.py`? \
+To enable hotswap vLLM sampling during training, launch the \
+training script via `python3 lora_hotswap_example.py` directly \
+without using Torchrun, especially when running in multi-GPU environments. \
+
+Custom logic in lora_hotswap_example are required to handles multi-GPU \
+synchronization and prevent NCCL conflicts with vLLM Engine when running \
+in multi-GPU setups. \
+
+If you have renamed llama_example.py, be sure to adjust the import in \
+lora_hotswap_example.py to load the correct `main` function for the training \
+loop.
+"""
+
+
 def parse_args() -> Namespace:
     """Parse command-line arguments.
 
@@ -73,6 +90,8 @@ def main(
     sampling_engine = (
         get_sampling_engine() if get_sampling_engine is not None else None
     )
+    if config.train_parameters.get("sampler") is not None:
+        assert sampling_engine is not None, SAMPLER_NOT_PROVIDED_ERROR_MSG
 
     training_args = config.train_parameters
 

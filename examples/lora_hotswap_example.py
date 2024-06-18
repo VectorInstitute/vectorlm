@@ -1,4 +1,4 @@
-"""llama_example, but uses multiprocessing in place of torchrun.
+"""Supply LoRASamplingEngine to llama_example.
 
 Each non-rank-0 worker process should spawn vectorlm logic in a
 separate thread (but same process) but won't run the actual
@@ -12,7 +12,8 @@ setup is to block the vectorlm thread with a multiprocessing synchronization
 feature (e.g., a Barrier shared across all processes) that the rank 0 process
 can remotely unblock.
 
-See https://docs.google.com/presentation/d/1FCa5O8RYYkRRCAAcXhqCvomePo5fEfhjQciSteTEJ30
+See docs.google.com/presentation/d/1FCa5O8RYYkRRCAAcXhqCvomePo5fEfhjQciSteTEJ30
+for more detail on this architecture.
 """
 
 from __future__ import annotations

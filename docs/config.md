@@ -54,7 +54,7 @@ Similar to the wandb config above, these keyword parameters are fed directly int
 
 ### Sampling during Training
 
-To disable sampling during training, delete the entire "sampling" section.
+To disable sampling during training, comment out the entire "sampling" section.
 
 * `sample_frequency`: Number of train steps between two consecutive sampling steps.
 * `output_jsonl_path`: Optional; write sampled output to the specified jsonl file.
