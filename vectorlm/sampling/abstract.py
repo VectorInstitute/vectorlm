@@ -9,7 +9,6 @@ import vllm
 
 if TYPE_CHECKING:
     import torch
-    from vectorlm.trainer import Trainer
 
     from .utils import SynchronizationBarriers
 

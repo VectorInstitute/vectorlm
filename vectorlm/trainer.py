@@ -7,13 +7,12 @@ from typing import TYPE_CHECKING, Any
 import peft
 import torch
 import torch.distributed as dist
+import wandb
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from transformers import PreTrainedTokenizer
 
-import wandb
 from vectorlm.dataset import Dataset
-from vectorlm.sampling import handle_sample
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.save_utils import (
     checkpoint_exists,
@@ -288,6 +287,8 @@ class Trainer:
         if (self.sampling_engine is not None) and (
             self.tr_step % self.config.sampler.sample_frequency == 0
         ):
+            from vectorlm.sampling import handle_sample
+
             self.sampling_engine.update(self.model, self.tr_step)
             handle_sample(
                 self.sampling_engine,

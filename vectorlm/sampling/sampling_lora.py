@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
-import torch
 import torch.distributed as dist
 import vllm
 from vllm.lora.request import LoRARequest
