@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import json
 import os
 import random
 import re
+import string
 import time
 from functools import partial
-from typing import Any, Callable, Iterable, NamedTuple, TypeVar
+from typing import Any, Callable, Counter, Iterable, NamedTuple, TypeVar
 
+import datasets
+import numpy as np
 import requests
 import torch
 import torch.distributed
@@ -29,8 +33,16 @@ NUM_DEMONSTRATIONS = {
     "few_shot_rationales": 3,
 }
 
+QUESTION_TEMPLATE = """\
+{input_text}
+Options:
+{rendered_answer_choices}
+"""
+ANSWER_OPTION_TEMPLATE = "{answer_key} {label}"
+
+
 ZERO_SHOT_PROMPT = """\
-Question: {question}
+{question}
 Answer: Let's think step-by-step. \
 """
 
@@ -39,9 +51,10 @@ Question: {question}
 Answer: Let's think step by step. {rationale}{answer}\
 """
 
+
 FEW_SHOT_DELIMITER = "\n\n---\n"
 
-GUIDE_TEMPLATE_FULL = """\
+FEW_SHOT_TEMPLATE_FULL = """\
 {few_shot_exemplars}\
 {few_shot_delimiter}\
 Question: {question}
@@ -50,7 +63,7 @@ Answer: Let's think step by step. \
 
 
 # capture groups: rationale, answer.
-RATIONALE_ANSWER_REGEXP = r"(.+the answer is )(\([A-C]\))[^\(\)]*$"
+RATIONALE_ANSWER_REGEXP = r"(.+the answer is )\(?([A-C])\)?[^\(\)]*$"
 
 
 class Question(NamedTuple):
@@ -83,6 +96,56 @@ class Rationale(NamedTuple):
             output.pop("raw_prompt")
 
         return output
+
+    @property
+    def is_correct(self) -> bool:
+        """Return whether self is correct."""
+        return self.parsed_answer == self.question.answer
+
+
+class _WeightedRationale(NamedTuple):
+    """Rationale paired with associated weight.
+
+    Weight can be negative, as in the example of proposed incorrect rationales,
+    where the corresponding memory is correct, but this rationale is not.
+
+    Weights for memory entries:
+    - 0 if neither this memory nor the proposal is correct.
+    - 1 if this memory is correct, but the corresponding proposal is incorrect.
+    - (1 - scale) if both are correct, higher if scale is lower, when other
+        proposals in this batch are not as accurate as other memories in this
+        batch.
+
+    Weights for proposal entries:
+    - 0 if this proposal is correct.
+    - 0 if neither this proposal nor the corresponding memory is correct.
+    - (-scale) if proposal is incorrect, but the corresponding memory is correct
+    """
+
+    rationale: Rationale
+    weight: float
+
+    @property
+    def sign_multiplier(self) -> int:
+        """Return sign multiplier of self."""
+        if self.weight > 0:
+            return 1
+
+        if self.weight < 0:
+            return -1
+
+        return 0
+
+
+class _WeightedRationales(NamedTuple):
+    """WeightedRationales from memory and proposal.
+
+    "weights_mean" is for rescaling clm grad values.
+    """
+
+    memorized: list[_WeightedRationale]
+    proposed: list[_WeightedRationale]
+    weights_mean: float
 
 
 def generate_rationale_answer(
@@ -123,11 +186,6 @@ def generate_rationale_answer(
             rationale, answer = match.groups()
         output.append(Rationale(question, query, rationale, answer))
 
-        import json
-
-        with open("data/output-20240527-1a.jsonl", "a") as output_file:
-            output_file.write(json.dumps(output[-1]._asdict()) + "\n")
-
     return output
 
 
@@ -161,6 +219,171 @@ def get_dataset() -> (
     ]
 
     return _index(questions[:150]), _index(questions[150:])
+
+
+def enumerate_answer_choices(
+    dataset_splits: list[Iterable[dict[str, Any]] | datasets.Dataset],
+    label_column_key: str,
+    label_lookup: dict[Any, str] | None,
+    data_limits: list[int | None],
+) -> Counter[str]:
+    """Return counter of all answer choice options.
+
+    Args:
+    ----
+        dataset_splits: list of dataset row iterators, one for each split.
+        label_column_key: should be the same across all splits.
+        label_lookup: Translate label to alternative, more descriptive form
+            before enumeration. If provided, rows where label is not in
+            the lookup dictionary would be skipped.
+        data_limits: max number of rows to load from each split, one per split.
+            Set to None for no limit.
+
+    Returns:
+    -------
+        Counter of label options across all splits.
+
+    """
+    output: Counter[str] = collections.Counter()
+    for dataset_split, max_row_count in zip(dataset_splits, data_limits):
+        for index, row in enumerate(dataset_split):
+            assert isinstance(row, dict)
+            label = row.get(label_column_key)
+
+            if label_lookup is not None:
+                label = label_lookup.get(label)
+                if label is None:
+                    continue
+
+            output[str(label)] += 1
+
+            if (max_row_count is not None) and (index + 1 == max_row_count):
+                break
+
+    return output
+
+
+def _render_label_choices(
+    label_choices: list[str],
+    template: str,
+) -> tuple[str, dict[str, str]]:
+    """Render label_choices as a multiple-choice question.
+
+    Returns
+    -------
+        lookup dict mapping label value to assigned answer key e.g., "(A)".
+
+    """
+    output_lines = []
+    label_lookup: dict[str, str] = {}
+
+    assert len(label_choices) <= len(string.ascii_uppercase)
+    for index, label in enumerate(label_choices):
+        answer_key = string.ascii_uppercase[index]
+        label_lookup[label] = answer_key
+        output_line = template.format(answer_key=answer_key, label=label)
+        output_lines.append(output_line)
+
+    return "\n".join(output_lines), label_lookup
+
+
+def load_hf_dataset(
+    dataset_path: str,
+    text_column_key: str,
+    label_column_key: str,
+    data_split_names: tuple[str, str] = ("train", "test"),
+    label_lookup: dict[str, str] | None = None,
+    data_limits: tuple[int | None, int | None] = (1000, 100),
+    question_template: str = QUESTION_TEMPLATE,
+    answer_option_template: str = ANSWER_OPTION_TEMPLATE,
+) -> tuple[dict[DatasetIndex, Question], dict[DatasetIndex, Question]]:
+    """Load TRICE-compatible dataset from a HuggingFace dataset.
+
+    Args:
+    ----
+        dataset_path: path to HF dataset repo or local folder.
+        text_column_key: source of input_text.
+        label_column_key: source of labels to render as options.
+        data_split_names: dataset splits for training and testing.
+        label_lookup: Optionally, supply a descriptive label to replace the
+            original labels from the dataset. If specified, only rows where
+            original labels is in label_lookup would be included. Otherwise,
+            all rows would be included and the original label would be used.
+        data_limits: max. number of entries to load from train and test split.
+        question_template: question template, should include {input_text} and
+            {rendered_answer_choices}
+        answer_option_template: template for answer choices, should include
+            {answer_key} and {label}
+
+    Returns:
+    -------
+        dict of train questions (index -> Question),
+        dict of test questions (index -> Question),
+
+    """
+    # prefer loading from local path if exists
+    # instead of loading from HF hub
+    if os.path.isdir(dataset_path):
+        dataset_dict = datasets.load_from_disk(dataset_path)
+    else:
+        dataset_dict = datasets.load_dataset(dataset_path)
+
+    assert isinstance(dataset_dict, datasets.dataset_dict.DatasetDict)
+    assert len(data_split_names) == len(("train", "test"))
+
+    for data_split_name in data_split_names:
+        assert data_split_name in dataset_dict, (data_split_names, dataset_dict)
+
+    label_choices = enumerate_answer_choices(
+        [dataset_dict[split_name] for split_name in data_split_names],
+        label_column_key,
+        label_lookup,
+        list(data_limits),
+    )
+    label_choice_str, answer_map = _render_label_choices(
+        [str(label) for label in label_choices],
+        answer_option_template,
+    )
+    print("label_choices stats:", label_choices)
+    print("label_choice_str:", label_choice_str)
+    print("Answer map:", answer_map)
+
+    output: list[dict[DatasetIndex, Question]] = []
+    # create one question for each row for each dataset split.
+    for data_split_name, max_num_rows in zip(data_split_names, data_limits):
+        questions: dict[DatasetIndex, Question] = {}
+        dataset = dataset_dict[data_split_name]
+        for index, row in enumerate(dataset):
+            assert isinstance(row, dict)
+
+            # Translate label and skip rows where label is not in lookup.
+            label = row[label_column_key]
+            if label_lookup is not None:
+                label = label_lookup.get(label)
+
+            if label is None:
+                continue
+
+            label = str(label)
+
+            # use str keys to allow json serialization
+            questions[str(index)] = Question(
+                question_text=question_template.format(
+                    input_text=row[text_column_key],
+                    rendered_answer_choices=label_choice_str,
+                ),
+                answer=answer_map[label],
+            )
+
+            if (max_num_rows is not None) and (index + 1 == max_num_rows):
+                break
+
+        output.append(questions)
+
+    print(output[0]["0"].question_text + "\n")
+
+    assert len(output) == len(("train", "test"))
+    return tuple(output)  # type: ignore[tuple length]
 
 
 def get_n_correct_rationales(
@@ -241,7 +464,7 @@ def few_shot_sample(
         for rationale in few_shot_rationales
     )
 
-    few_shot_template = GUIDE_TEMPLATE_FULL.format(
+    few_shot_template = FEW_SHOT_TEMPLATE_FULL.format(
         few_shot_exemplars=few_shot_exemplars,
         few_shot_delimiter=FEW_SHOT_DELIMITER,
         question="{question}",
@@ -254,6 +477,177 @@ def few_shot_sample(
     )
 
     return dict(zip(questions.keys(), rationales))
+
+
+def get_weighted_rationales(
+    memorized_rationales: dict[DatasetIndex, Rationale],
+    proposed_rationales: dict[DatasetIndex, Rationale],
+) -> _WeightedRationales:
+    """Obtain TRICE Control-Variate weights for each rationale.
+
+    Obtain leave-one-out scales
+    - Divide number of other correct proposals, excluding self, by total number
+        of correct predictions in batch, also excluding self.
+
+    Obtain weights for memory + correct proposal entries
+    - 0 if neither original memory nor the new proposal is correct.
+    - 1 if original memory is correct, but the corresponding new proposal is
+        incorrect.
+    - (1 - scale) if new proposal is correct, higher if scale is lower, when
+        other proposals are not as accurate as original memories.
+
+    Obtain weights for all proposal entries, negative if incorrect.
+    - 0 if this proposal is correct.
+    - 0 if neither this proposal nor the corresponding memory is correct.
+    - (-scale) if proposal is incorrect, but the corresponding memory is
+        correct.
+
+    Params:
+    ----
+        memorized_rationales: memory rationales.
+        proposed_rationales: proposed new rationales.
+
+
+    Keys of "memorized" must match those of "proposed".
+
+    Returns
+    -------
+        List of weighted rationales. If there are N memory rationales
+        and N proposals, the output would be of length (2 * N).
+
+    """
+    assert proposed_rationales.keys() == memorized_rationales.keys()
+    num_correct_proposals = len(filter_rationales(proposed_rationales))
+    num_correct_all = len(
+        {
+            **filter_rationales(proposed_rationales),
+            **filter_rationales(memorized_rationales),
+        },
+    )
+
+    # construst weighted list of rationale from both memory and proposal.
+    output_memorized: list[_WeightedRationale] = []
+    output_proposed: list[_WeightedRationale] = []
+    for dataset_index in memorized_rationales:
+        memorized = memorized_rationales[dataset_index]
+        proposed = proposed_rationales[dataset_index]
+        if (proposed.is_correct) and (not memorized.is_correct):
+            msg = (
+                "Proposal is correct but memory is not. "
+                "Did you update memory before trying to compute weights?"
+                f"proposal: {proposed}\n"
+                f"memory: {memorized}"
+            )
+            raise ValueError(msg)
+
+        # leave-one-out (leave-self-out) scale
+        scale_numerator = num_correct_proposals
+        scale_denominator = num_correct_all - 1 + 1e-10
+        if proposed.is_correct:
+            scale_numerator -= 1
+
+        scale = scale_numerator / scale_denominator
+
+        # weight for memory, which might have been overwritten with the new
+        # proposal if that proposal is correct.
+        if (not proposed.is_correct) and (not memorized.is_correct):
+            weight_memorized = 0.0
+        elif (memorized.is_correct) and (not proposed.is_correct):
+            weight_memorized = 1.0
+        else:
+            # proposal is correct, and should have already overwritten memory.
+            weight_memorized = 1 - scale
+        output_memorized.append(_WeightedRationale(memorized, weight_memorized))
+
+        # weight for proposal
+        if proposed.is_correct:
+            # Since proposed is correct, after memory update "memorized"
+            # would be the same as "proposed". No need to include this again.
+            # Hence, set weight to 0.
+            weight_proposed = 0.0
+        elif (not proposed.is_correct) and (not memorized.is_correct):
+            weight_proposed = 0.0
+        else:
+            # new proposal is incorrect, but original memory is correct
+            weight_proposed = -scale
+
+        output_proposed.append(_WeightedRationale(proposed, weight_proposed))
+
+    # sum of all weights, for rescaling grads.
+    weight_tally = sum(
+        abs(wr.weight) for wr in (output_memorized + output_proposed)
+    )
+
+    return _WeightedRationales(
+        memorized=output_memorized,
+        proposed=output_proposed,
+        weights_mean=weight_tally / (num_correct_all + 1e-10),
+    )
+
+
+def _softmax(weights: np.ndarray) -> np.ndarray:
+    """Return softmax value given weights."""
+    assert len(weights.shape) == 1, weights.shape
+    exp_weights = np.exp(weights - np.max(weights))
+    return exp_weights / np.sum(exp_weights, axis=0)
+
+
+def _systematic_resample(
+    probabilities: np.ndarray,
+    num_selected: int,
+    seed: int = 0,
+) -> list[int]:
+    """Resample systematically.
+
+    Params:
+    ------
+        probabilties: 1D float array, must sum up to 1.
+        num_selected: number of items to select.
+
+    Returns
+    -------
+        list of index of "num_selected" items that were selected.
+        Each item is an index of the probability array.
+
+    """
+    assert np.allclose(probabilities.sum(), 1), "Forgot to normalize?"
+    assert num_selected > 0
+
+    generator = np.random.Generator(np.random.PCG64(seed))
+    randomness = generator.uniform(0, 1 / num_selected)
+    selections: list[int] = []
+
+    thresholds = np.cumsum(probabilities).tolist()  # (N,)
+    thresholds_low = [0.0, *thresholds]  # (N + 1,)
+    thresholds_high = [*thresholds, 1.0]  # (N + 1,)
+    for option_index, (threshold_low, threshold_high) in enumerate(
+        zip(thresholds_low, thresholds_high),
+    ):
+        # try assigning each selection to the threshold, starting
+        # from the next available one.
+        for selection_index in range(len(selections), num_selected):
+            selected_pos = selection_index * (1 / num_selected) + randomness
+
+            if (selected_pos >= threshold_low) and (
+                selected_pos < threshold_high
+            ):
+                selections.append(option_index)
+
+    return selections
+
+
+def subsample_weighted(
+    weighted_rationales: list[_WeightedRationale],
+    num_items: int,
+    seed: int = 0,
+) -> list[_WeightedRationale]:
+    """Subsample rationales based on absolute value of weights."""
+    weights = np.array([abs(wr.weight) for wr in weighted_rationales])
+    weights = np.clip(weights, a_min=1e-10, a_max=None)
+    probabilities = _softmax(weights)
+    selected_index_items = _systematic_resample(probabilities, num_items, seed)
+
+    return [weighted_rationales[index] for index in selected_index_items]
 
 
 def _serialize_memory(
@@ -295,7 +689,7 @@ def masked_clm_loss(
     -------
         logits: Tensor[float] (batch, width, vocab)
         input_ids: Tensor[int] (batch, width)
-        loss_mask: Tensor[int] (batch, width)
+        loss_multiplier: Tensor[int] (batch, width)
 
     Returns
     -------
@@ -329,9 +723,11 @@ class ICEMTrainer(Trainer):
 
     train_mini_batch_size: int = 8  # parameter "M" as in paper
 
-    def _rationales_to_batch(
+    def _batch_tokenize_rationales(
         self,
         rationales: Iterable[Rationale],
+        rationale_weights: Iterable[float] | None = None,
+        use_raw_prompt: bool = True,
     ) -> dict[str, torch.Tensor]:
         """Tokenize rationales to produce training batch.
 
@@ -346,22 +742,36 @@ class ICEMTrainer(Trainer):
         - Answer ("y") is not included.
         - Loss is not calculated over prompt tokens ("x").
 
+        Params
+        ------
+        rationale_weights: If provided, rescale loss_multiplier of each item by
+            this value. Should be of the same length as rationale.
+        use_raw_prompt: Use raw_prompt as context if set to True.
+            Otherwise, use zero-shot prompt as context.
+
         Returns
         -------
             dict:
-            - input_ids: (batch_size, num_tokens)
-            - attention_mask: (batch_size, num_tokens)
-            - loss_mask: (batch_size, num_tokens)
+            - input_ids: int, (batch_size, num_tokens)
+            - attention_mask: int, (batch_size, num_tokens)
+            - loss_multipliers: float, (batch_size, num_tokens)
 
         """
         assert self.tokenizer is not None
         input_id_lists: list[list[int]] = []
         attention_masks_list: list[list[int]] = []
-        loss_masks_list: list[list[int]] = []
+        loss_multipliers_list: list[list[int]] = []
 
         # Tokenize prompt and rationale separately before concatenating.
         for rationale in rationales:
-            prompt_tokens = list(self.tokenizer(rationale.raw_prompt).input_ids)
+            if use_raw_prompt:
+                context = rationale.raw_prompt
+            else:
+                context = ZERO_SHOT_PROMPT.format(
+                    question=rationale.question.question_text,
+                )
+
+            prompt_tokens = list(self.tokenizer(context).input_ids)
 
             continuation_str = rationale.rationale
             if rationale.parsed_answer is not None:
@@ -369,11 +779,14 @@ class ICEMTrainer(Trainer):
             rationale_tokens = list(self.tokenizer(continuation_str).input_ids)
 
             attention_mask = [1] * (len(prompt_tokens) + len(rationale_tokens))
-            loss_mask = [0] * len(prompt_tokens) + [1] * len(rationale_tokens)
+            loss_multiplier = [0] * len(prompt_tokens) + [1] * len(
+                rationale_tokens,
+            )
+            assert sum(loss_multiplier) > 0
 
             input_id_lists.append(prompt_tokens + rationale_tokens)
             attention_masks_list.append(attention_mask)
-            loss_masks_list.append(loss_mask)
+            loss_multipliers_list.append(loss_multiplier)
 
         # set max_seq_length to max real number of tokens,
         # capped at max_seq_len from config.
@@ -382,13 +795,32 @@ class ICEMTrainer(Trainer):
             max(map(len, input_id_lists)),
         )
         batch_size = len(input_id_lists)
+        weights = (
+            list(rationale_weights)
+            if rationale_weights is not None
+            else [1.0] * batch_size
+        )
 
+        assert batch_size > 0
         input_ids = torch.zeros((batch_size, max_seq_length), dtype=torch.long)
         attn_masks = torch.zeros((batch_size, max_seq_length), dtype=torch.int)
-        loss_masks = torch.zeros((batch_size, max_seq_length), dtype=torch.int)
+        loss_multipliers = torch.zeros(
+            (batch_size, max_seq_length),
+            dtype=torch.float,
+        )
 
-        for index, (input_id_list, attention_mask, loss_mask) in enumerate(
-            zip(input_id_lists, attention_masks_list, loss_masks_list),
+        for index, (
+            input_id_list,
+            attention_mask,
+            loss_multiplier,
+            weight,
+        ) in enumerate(
+            zip(
+                input_id_lists,
+                attention_masks_list,
+                loss_multipliers_list,
+                weights,
+            ),
         ):
             # skip rationales that exceed max_seq_length
             actual_length = len(input_id_list)
@@ -398,12 +830,14 @@ class ICEMTrainer(Trainer):
             _non_pad_len = min(max_seq_length, actual_length)
             input_ids[index, :_non_pad_len] = torch.Tensor(input_id_list)
             attn_masks[index, :_non_pad_len] = torch.Tensor(attention_mask)
-            loss_masks[index, :_non_pad_len] = torch.Tensor(loss_mask)
+            loss_multipliers[index, :_non_pad_len] = (
+                torch.Tensor(loss_multiplier) * weight
+            )
 
         return {
             "input_ids": input_ids,
             "attention_mask": attn_masks,
-            "loss_mask": loss_masks,
+            "loss_multipliers": loss_multipliers,
         }
 
     def prepare_trainer(
@@ -422,8 +856,28 @@ class ICEMTrainer(Trainer):
                 temperature=1.0,
             ),
         )
+        self.batch_generate_fn_eval = partial(
+            self.sampling_engine.generate_text_only,
+            sampling_params=SamplingParams(
+                max_tokens=self.config.max_seq_len,  # type: ignore[reportAttributeAccessIssue]
+                temperature=0.0,
+            ),
+            use_tqdm=True,
+        )
 
-        self.train_questions, self.test_questions = get_dataset()
+        self.trice_config = self.config.trice_configs  # type: ignore[reportAttributeAccessIssue]
+        trice_data_config = self.trice_config.hf_dataset
+        self.train_questions, self.test_questions = load_hf_dataset(
+            trice_data_config.path,
+            text_column_key=trice_data_config.text_column_key,
+            label_column_key=trice_data_config.label_column_key,
+            answer_option_template=trice_data_config.answer_option_template,
+            data_limits=(
+                trice_data_config.limits.train,
+                trice_data_config.limits.test,
+            ),
+            label_lookup=trice_data_config.get("label_lookup"),
+        )
 
         # Obtain a number of rationales for bootstraping the prompt for
         # generating explanations given answer hint.
@@ -440,8 +894,9 @@ class ICEMTrainer(Trainer):
         )
 
         # "Memory" is a dict mapping dataset_id to rationales.
+        print(f"Initializing memory ({len(self.train_questions)} total).")
         self.memory = few_shot_sample(
-            self.batch_generate_fn,
+            partial(self.batch_generate_fn, use_tqdm=True),
             self.few_shot_rationales,
             self.train_questions,
         )
@@ -450,36 +905,51 @@ class ICEMTrainer(Trainer):
         _serialize_memory(self.memory, {"step": self.tr_step})
         print(f"Valid memories: {len(valid_rationales)}/{len(self.memory)}")
 
-    def _get_train_rationales(
+    def sample_rationales_and_update_memory(
         self,
         num_rationales: int,
-    ) -> dict[DatasetIndex, Rationale]:
-        """Sample new rationales from training questions.
+    ) -> _WeightedRationales:
+        """Sample new rationales and write to memory if correct.
 
-        Return only rationales where answer is correct. Prefer newly
-        generated rationales and fall back to ones from memory for the same
-        set of randomly-selected questions.
+        Params:
+        ------
+            num_rationales: number of rationales to generate on.
+
+        Returns
+        -------
+            _WeightedRationales, including "num_rationales" each
+                of memory and proposal, as well as weighted scores.
+
         """
         random.seed(self.tr_step)
         selected_keys = random.sample(self.memory.keys(), num_rationales)
-        prev_rationales = {key: self.memory[key] for key in selected_keys}
+        memorized_rationales = {key: self.memory[key] for key in selected_keys}
 
         selected_questions = {
             key: rationale.question
-            for key, rationale in prev_rationales.items()
+            for key, rationale in memorized_rationales.items()
         }
 
         # "proposed" rationales
-        new_rationales = few_shot_sample(
-            self.batch_generate_fn,
+        proposed_rationales = few_shot_sample(
+            partial(self.batch_generate_fn, use_tqdm=False),
             self.few_shot_rationales,
             selected_questions,
         )
+        assert len(proposed_rationales) == len(memorized_rationales)
 
-        return {
-            **filter_rationales(prev_rationales),
-            **filter_rationales(new_rationales),
+        # write correct proposed rationales to memories.
+        memorized_rationales = {
+            **memorized_rationales,
+            **filter_rationales(proposed_rationales),
         }
+        self.memory = {**self.memory, **filter_rationales(proposed_rationales)}
+        _serialize_memory(proposed_rationales, {"step": self.tr_step})
+
+        return get_weighted_rationales(
+            memorized_rationales=memorized_rationales,
+            proposed_rationales=proposed_rationales,
+        )
 
     def train_step(self, _: dict[str, torch.Tensor], epoch: int) -> float:
         """Apply one TRICE training step.
@@ -491,26 +961,33 @@ class ICEMTrainer(Trainer):
         assert self.lr_scheduler is not None
         assert self.sampling_engine is not None
 
-        # keep sampling until at least one rationale (new or memory) is correct.
-        new_correct_rationales: dict[DatasetIndex, Rationale] = {}
-        while len(new_correct_rationales) == 0:
-            new_correct_rationales = self._get_train_rationales(
-                self.config.batch_size,  # type: ignore[reportAttributeAccessIssue]
-            )
-
-        # Write newly sampled correct rationales to memory.
-        self.memory = {**self.memory, **new_correct_rationales}
-        _serialize_memory(self.memory, {"step": self.tr_step})
-
-        training_batch = self._rationales_to_batch(
-            new_correct_rationales.values(),
+        # SAMPLING_SIZE _WeightedRationale instances, not yet subsampled.
+        weighted_rationales = self.sample_rationales_and_update_memory(
+            self.trice_config.sampling_size,
         )
+        subsampled_rationales = subsample_weighted(
+            weighted_rationales.memorized + weighted_rationales.proposed,
+            self.trice_config.batch_size,
+            epoch,
+        )
+
+        rationales = [wr.rationale for wr in subsampled_rationales]
+        rationale_weights = [
+            weighted_rationales.weights_mean * wr.sign_multiplier
+            for wr in subsampled_rationales
+        ]
+        training_batch = self._batch_tokenize_rationales(
+            rationales,
+            rationale_weights=rationale_weights,
+            use_raw_prompt=False,
+        )
+
         _batch = {
             k: v.to(torch.cuda.current_device())
             for k, v in training_batch.items()
         }
 
-        # Sync grad only if is about to run update.
+        # Sync grad only if about to run update.
         is_update_step = (self.tr_step + 1) % self.gas == 0
         with contextlib.ExitStack() as stack:
             if not is_update_step:
@@ -525,7 +1002,7 @@ class ICEMTrainer(Trainer):
             tr_step_loss = masked_clm_loss(
                 logits,
                 _batch["input_ids"],
-                _batch["loss_mask"],
+                _batch["loss_multipliers"],
             )
             (tr_step_loss / self.gas).backward()
             self.model.clip_grad_norm_(self.config.max_grad_norm)  # type: ignore[reportAttributeAccessIssue]
@@ -533,7 +1010,11 @@ class ICEMTrainer(Trainer):
             if is_update_step:
                 self.optimizer.step()
                 self.optimizer.zero_grad()
-                self.sampling_engine.update(self.model, self.tr_step)
+                self.sampling_engine.update(
+                    self.model,
+                    self.tr_step,
+                    self.tokenizer,
+                )
 
                 if isinstance(
                     self.lr_scheduler,
@@ -552,7 +1033,7 @@ class ICEMTrainer(Trainer):
     def eval_step(self, epoch: int) -> float:
         """Return eval accuracy."""
         rationales = few_shot_sample(
-            self.batch_generate_fn,
+            self.batch_generate_fn_eval,
             self.few_shot_rationales,
             self.test_questions,
         )

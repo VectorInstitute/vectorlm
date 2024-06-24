@@ -9,7 +9,7 @@ import vllm
 
 if TYPE_CHECKING:
     import torch
-    from vectorlm.trainer import Trainer
+    from transformers import PreTrainedTokenizer
 
     from .utils import SynchronizationBarriers
 
@@ -38,12 +38,18 @@ class AbstractSamplingEngine(ABC):
         self.vllm_train_step = -1
 
     @abstractmethod
-    def update(self, model: torch.nn.Module, train_step: int) -> None:
+    def update(
+        self,
+        model: torch.nn.Module,
+        train_step: int,
+        tokenizer: PreTrainedTokenizer | None = None,
+    ) -> None:
         """Update model in sampling engine if the current copy is stale.
 
         Params:
             model: PeftModel, up-to-date model
             train_step: int, train step of the given model.
+            tokenizer: optionally, provide updated copy of tokenizer.
         """
         if self.vllm_train_step != train_step:
             # Update parameters of self.vllm_llm using the given `model``.
@@ -54,6 +60,7 @@ class AbstractSamplingEngine(ABC):
         self,
         prompts: list[str],
         sampling_params: vllm.SamplingParams | None = None,
+        use_tqdm: bool = False,
     ) -> list[vllm.RequestOutput]:
         """Generate continuation for the given prompts synchronously.
 
@@ -79,9 +86,10 @@ class AbstractSamplingEngine(ABC):
         self,
         prompts: list[str],
         sampling_params: vllm.SamplingParams | None = None,
+        use_tqdm: bool = False,
     ) -> list[str]:
         """Generate and return text only."""
         return [
             response.outputs[0].text
-            for response in self.generate(prompts, sampling_params)
+            for response in self.generate(prompts, sampling_params, use_tqdm)
         ]

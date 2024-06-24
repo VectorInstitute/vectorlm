@@ -11,3 +11,6 @@ data/
 /.vscode
 /data
 /env
+
+.env
+logs/

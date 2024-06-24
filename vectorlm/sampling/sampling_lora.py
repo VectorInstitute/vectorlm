@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
-import torch
 import torch.distributed as dist
 import vllm
 from vllm.lora.request import LoRARequest
@@ -15,6 +14,7 @@ from .utils import SynchronizationBarriers, multiprocess_wrap
 
 if TYPE_CHECKING:
     from peft.peft_model import PeftModel
+    from transformers import PreTrainedTokenizer
 
 
 class LoRASamplingEngine(AbstractSamplingEngine):
@@ -63,15 +63,24 @@ class LoRASamplingEngine(AbstractSamplingEngine):
         self.generate_fn = multiprocess_wrap(generate_fn_raw, self.barriers)
         self.vllm_train_step = -1
 
-    def update(self, model: PeftModel, train_step: int) -> None:
+    def update(
+        self,
+        model: PeftModel,
+        train_step: int,
+        tokenizer: PreTrainedTokenizer | None = None,
+    ) -> None:
         """Update model in sampling engine if the current copy is stale.
 
         Params:
             model: PeftModel, up-to-date model
             train_step: int, train step of the given model.
+            tokenizer: optionally, provide updated copy of tokenizer.
         """
         self.barriers.before_generation.wait()
         if self.vllm_train_step != train_step:
+            if tokenizer is not None:
+                tokenizer.save_pretrained(self.adapter_temp_folder)
+
             save_peft_adapter(model, self.adapter_temp_folder)
             self.vllm_train_step = train_step
             self.lora_request = LoRARequest(
@@ -86,6 +95,7 @@ class LoRASamplingEngine(AbstractSamplingEngine):
         self,
         prompts: list[str],
         sampling_params: vllm.SamplingParams | None = None,
+        use_tqdm: bool = False,
     ) -> list[vllm.RequestOutput]:
         """Generate continuation for the given prompts. Invoke at all ranks.
 
@@ -106,7 +116,7 @@ class LoRASamplingEngine(AbstractSamplingEngine):
             prompts,
             sampling_params,
             lora_request=self.lora_request,
-            use_tqdm=False,
+            use_tqdm=use_tqdm,
         )
         assert len(return_value) == len(prompts)
 

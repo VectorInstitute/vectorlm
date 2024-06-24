@@ -92,7 +92,6 @@ def main(
     # setup wandb
     if rank == 0 and config.enable_wandb_logging:
         wandb_setup(config, **config.wandb_config)
-    dist.barrier()
 
     # load model and tokenizer
     model, tokenizer = load_model_and_tokenizer(
@@ -188,6 +187,7 @@ def main(
     # If no checkpoint, it returns 0.
     trainer.model.train()
     trainer.find_checkpoint(training_args.output_dir)
+    eval_acc = 0
 
     pbar = tqdm(
         range(config.train_parameters.epochs),
@@ -196,11 +196,10 @@ def main(
         ncols=75,
     )
     for index in pbar:
-        eval_acc = 0
         train_loss, eval_output = trainer.step({}, index)
         eval_acc = eval_output if eval_output is not None else eval_acc
 
-        pbar.set_description(f"{train_loss:.3f}, {eval_acc * 100:.0f}%")
+        pbar.set_description(f"{train_loss:.3e}, {eval_acc * 100:.0f}%")
 
     if is_lora_enabled:
         save_peft_adapter(trainer.model, hf_save_dir)
