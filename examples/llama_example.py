@@ -5,6 +5,7 @@ import math
 import os
 import sys
 from argparse import Namespace
+from typing import TYPE_CHECKING, Callable
 
 import torch
 import torch.distributed as dist
@@ -13,7 +14,7 @@ from tqdm import tqdm
 from transformers import set_seed
 
 from vectorlm.dataset import Dataset
-from vectorlm.trainer import Trainer
+from vectorlm.trice import ICEMTrainer
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.misc_utils import cleanup, setup, wandb_setup
 from vectorlm.utils.model_utils import (
@@ -29,6 +30,9 @@ from vectorlm.utils.save_utils import (
     save_consolidated_model,
     save_peft_adapter,
 )
+
+if TYPE_CHECKING:
+    from vectorlm.sampling.utils import AbstractSamplingEngine
 
 
 def parse_args() -> Namespace:
@@ -48,8 +52,28 @@ def parse_args() -> Namespace:
     return parser.parse_args()
 
 
-def main(config: Config) -> None:
-    """Define the main calling function."""
+def main(
+    config: Config,
+    get_sampling_engine: Callable[[], AbstractSamplingEngine] | None = None,
+) -> None:
+    """Define the main calling function.
+
+    WORLD_SIZE, LOCAL_RANK, and RANK are retrieved from environment vars.
+
+    Args:
+    ----
+        config: vectorlm config, e.g., loaded from yaml
+        get_sampling_engine: optional, blocking function that initializes the
+            sampling engine. Required if sampling during training is needed.
+            This method is provided in _VLLMCallbackWrapper. To avoid concurrent
+            nccl access, be sure to invoke this method before any torch method
+            that might also access nccl.
+
+    """
+    sampling_engine = (
+        get_sampling_engine() if get_sampling_engine is not None else None
+    )
+
     training_args = config.train_parameters
 
     # set a seed
@@ -66,9 +90,8 @@ def main(config: Config) -> None:
         torch.cuda.empty_cache()
 
     # setup wandb
-    if rank == 0:
+    if rank == 0 and config.enable_wandb_logging:
         wandb_setup(config, **config.wandb_config)
-    dist.barrier()
 
     # load model and tokenizer
     model, tokenizer = load_model_and_tokenizer(
@@ -87,7 +110,9 @@ def main(config: Config) -> None:
         is_lora_enabled = True
         peft_adapter_path = None
         # Restore peft adapter from filesystem if available.
-        if checkpoint_exists(training_args.output_dir):
+        if (training_args.checkpointing_enabled) and checkpoint_exists(
+            training_args.output_dir,
+        ):
             peft_adapter_path = os.path.join(
                 training_args.output_dir,
                 "checkpoints",
@@ -115,6 +140,9 @@ def main(config: Config) -> None:
         training_args.low_cpu_mem_usage,
         is_lora_enabled,
     )
+    # Trigger FSDP initialization before retrieving weights.
+    # Otherwise FSDP is_root flag might be set incorrectly.
+    model(input_ids=torch.zeros((1, 1), dtype=torch.int))
 
     # load dataset
     dataset = Dataset(
@@ -123,7 +151,7 @@ def main(config: Config) -> None:
     )
 
     # instantiate trainer
-    trainer = Trainer(
+    trainer = ICEMTrainer(
         config=training_args,
         enable_wandb_logging=config.enable_wandb_logging,
         original_dataset_length=dataset.original_length,
@@ -151,39 +179,35 @@ def main(config: Config) -> None:
         dataset,
         optimizer,
         lr_scheduler,
+        sampling_engine,
         is_peft_adapter_restored,
     )
 
     # Checkpoint check. Always call before training.
     # If no checkpoint, it returns 0.
-    checkpointed_epoch = trainer.find_checkpoint(training_args.output_dir)
+    trainer.model.train()
+    trainer.find_checkpoint(training_args.output_dir)
+    eval_acc = 0
 
-    for epoch in range(checkpointed_epoch, training_args.epochs):
-        trainer.model.train()
-        train_dl_iterator = iter(dataset.train_dataloader)
-        for _ in tqdm(
-            range(len(dataset.train_dataloader)),
-            disable=rank != 0,
-            file=sys.__stdout__,
-        ):
-            batch = next(train_dl_iterator)
-            trainer.step(batch, epoch)
+    pbar = tqdm(
+        range(config.train_parameters.epochs),
+        disable=rank != 0,
+        file=sys.__stdout__,
+        ncols=75,
+    )
+    for index in pbar:
+        train_loss, eval_output = trainer.step({}, index)
+        eval_acc = eval_output if eval_output is not None else eval_acc
 
-        if epoch == training_args.epochs - 1:
-            hf_save_dir = os.path.join(training_args.output_dir, "final-model")
-        else:
-            hf_save_dir = os.path.join(
-                training_args.output_dir,
-                "checkpoints",
-                f"epoch_{epoch}",
-                "end-epoch-model",
-            )
+        pbar.set_description(f"{train_loss:.3e}, {eval_acc * 100:.0f}%")
 
-        if is_lora_enabled:
-            save_peft_adapter(trainer.model, hf_save_dir)
-        else:
-            save_consolidated_model(trainer.model, hf_save_dir, rank)
-        dataset.reset_dataloaders()
+    if is_lora_enabled:
+        save_peft_adapter(trainer.model, hf_save_dir)
+    else:
+        save_consolidated_model(trainer.model, hf_save_dir, rank)
+    dataset.reset_dataloaders()
+
+    sys.exit(0)
 
 
 if __name__ == "__main__":

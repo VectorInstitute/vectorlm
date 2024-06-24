@@ -10,3 +10,7 @@ data/
 /.cache
 /.vscode
 /data
+/env
+
+.env
+logs/

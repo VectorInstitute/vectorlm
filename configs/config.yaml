@@ -21,14 +21,13 @@ train_parameters:
   low_cpu_mem_usage: True
 
   # LoRA config: uncomment the block below to enable LoRA
-  
+
   # lora_peft_config:
   #   task_type: CAUSAL_LM
   #   inference_mode: False
   #   r: 8
   #   lora_alpha: 32
   #   lora_dropout: 0.1
-
 
   # Gradient norm clipping
   max_grad_norm: 1
@@ -49,6 +48,17 @@ train_parameters:
   checkpointing_enabled: True
   logging_steps: 500
   save_frequency: 0.25
+
+  # Sampling during training
+  # Uncomment the block below to enable.
+
+  # sampler:
+  #   sample_frequency: 8
+  #   output_jsonl_path: data/output.jsonl
+  #   prompts:
+  #     - "Vector Institute of the"
+  #     - "Vector Institute is located in the city of"
+  #     - "The answer to life the universe and everything is"
 
 dataset:
   ignore_index: -100

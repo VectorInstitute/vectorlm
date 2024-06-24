@@ -1,0 +1,69 @@
+model: google/gemma-2b-it
+enable_wandb_logging: False
+
+wandb_config:
+  project: vector-lm-verify
+  name: benchmark-lora
+  # tags: ["20240418-1a-preemption"]
+
+train_parameters:
+  output_dir: /network/scratch/j/jacob-junqi.tian/vectorlm/weights
+  max_seq_len: 1024
+  epochs: 100000
+  seed: 11
+
+  # Sharding strategy
+  sharding_strategy: FULL_SHARD
+
+  # Memory
+  use_mp: True
+  use_activation_checkpointing: True
+  # use_flash_attention is automatically enabled
+  # for CUDA capability > 8.0
+  use_flash_attention: False
+  low_cpu_mem_usage: True
+
+  lora_peft_config:
+    task_type: CAUSAL_LM
+    inference_mode: False
+    r: 8
+    lora_alpha: 32
+    lora_dropout: 0.1
+
+  # Gradient norm clipping
+  max_grad_norm: 1
+  gradient_accumulation_steps: 4
+  batch_size: 2
+
+  # Optimizer
+  optimizer:
+    lr: 2.0e-5
+    weight_decay: 0.1
+    betas: [0.9, 0.95]
+    eps: 1.0e-5
+
+  # Scheduler
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.05
+
+  # Checkpointing
+  checkpointing_enabled: False
+  logging_steps: 100
+  save_frequency: 0.10
+
+  # Sampling during training
+  sampler:
+    sample_frequency: 8
+    output_jsonl_path: data/output-5e-5-2b.jsonl
+    vllm_dtype: half
+    prompts:
+      - "Vector Institute of the"
+      - "Vector Institute is located in the city of"
+      - "The answer to life the universe and everything is"
+
+dataset:
+  ignore_index: -100
+  eval_bs: 8
+  train_bs: 8
+  train_ds: data/processed/vector-west/train
+  eval_ds: data/processed/vector-west/test
