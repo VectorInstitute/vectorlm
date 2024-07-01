@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import peft
 import torch
 import torch.distributed as dist
+import wandb
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from transformers import PreTrainedTokenizer
 
-import wandb
 from vectorlm.dataset import Dataset
 from vectorlm.utils.data_utils import Config
 from vectorlm.utils.save_utils import (
@@ -25,6 +25,9 @@ from vectorlm.utils.save_utils import (
     save_peft_adapter,
     save_scheduler,
 )
+
+if TYPE_CHECKING:
+    from vectorlm.sampling import AbstractSamplingEngine
 
 
 class Trainer:
@@ -85,12 +88,16 @@ class Trainer:
         self.max_steps = None
         self.saving_steps = None
         self._post_process(original_dataset_length)
-
         self.peft_method: str | None = None
         self.is_peft_adapter_restored: bool = False
 
         if "lora_peft_config" in self.config:
             self.peft_method = peft.utils.peft_types.PeftType.LORA
+
+        self.peft_method: str | None = None
+        self.is_peft_adapter_restored: bool = False
+
+        self.sampling_engine: AbstractSamplingEngine | None = None
 
     def _post_process(self, ds_orig_length: int) -> None:
         """Calculate steps for weight updates and saving."""
@@ -115,6 +122,7 @@ class Trainer:
         dataset: Dataset,
         optimizer: Optimizer,
         lr_scheduler: LRScheduler | ReduceLROnPlateau,
+        sampling_engine: AbstractSamplingEngine | None = None,
         is_peft_adapter_restored: bool = False,
     ) -> None:
         """Set all essential training requirements.
@@ -127,6 +135,9 @@ class Trainer:
             optimizer: The training optimizer.
             lr_scheduler: The LR scheduler.
 
+            sampling_engine: Optionally, provide a sampling engine to enable
+                sampling during training.
+
             is_peft_adapter_restored: whether peft is enabled and
                 adapters were restored from filesystem.
 
@@ -136,6 +147,8 @@ class Trainer:
         self.dataset = dataset
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
+
+        self.sampling_engine = sampling_engine
 
         self.is_peft_adapter_restored = is_peft_adapter_restored
 
@@ -233,7 +246,7 @@ class Trainer:
 
         """
         checkpoint = checkpoint_exists(checkpoint_dir)
-        if checkpoint:
+        if (checkpoint) and (self.config.checkpointing_enabled):
             main_ckpt_dir = os.path.join(checkpoint_dir, "checkpoints")
             latest_ckpt_dir = get_latest_checkpoint_dir(main_ckpt_dir)
             full_ckpt_dir = os.path.join(main_ckpt_dir, latest_ckpt_dir)
@@ -270,6 +283,24 @@ class Trainer:
         test_loss = None
         if self.tr_step % self.logging_steps == 0:
             test_loss = self.eval_step(epoch)
+
+        if (self.sampling_engine is not None) and (
+            self.tr_step % self.config.sampler.sample_frequency == 0
+        ):
+            from vectorlm.sampling import handle_sample
+
+            self.sampling_engine.update(self.model, self.tr_step)
+            handle_sample(
+                self.sampling_engine,
+                self.config.sampler.prompts,
+                output_path=(
+                    self.config.sampler.output_jsonl_path
+                    if dist.get_rank() == 0
+                    else None
+                ),
+                extra_data={"train_step": self.tr_step},
+            )
+
         self.tr_step += 1
         return train_loss, test_loss
 

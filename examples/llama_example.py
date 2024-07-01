@@ -5,6 +5,7 @@ import math
 import os
 import sys
 from argparse import Namespace
+from typing import TYPE_CHECKING, Callable
 
 import torch
 import torch.distributed as dist
@@ -30,6 +31,26 @@ from vectorlm.utils.save_utils import (
     save_peft_adapter,
 )
 
+if TYPE_CHECKING:
+    from vectorlm.sampling.utils import AbstractSamplingEngine
+
+
+SAMPLER_NOT_PROVIDED_ERROR_MSG = """
+Hot-swap sampling is enabled but sampler engine is not provided. \
+Did you launch this script via `torchrun llama_example.py`? \
+To enable hotswap vLLM sampling during training, launch the \
+training script via `python3 lora_hotswap_example.py` directly \
+without using Torchrun, especially when running in multi-GPU environments. \
+
+Custom logic in lora_hotswap_example are required to handles multi-GPU \
+synchronization and prevent NCCL conflicts with vLLM Engine when running \
+in multi-GPU setups. \
+
+If you have renamed llama_example.py, be sure to adjust the import in \
+lora_hotswap_example.py to load the correct `main` function for the training \
+loop.
+"""
+
 
 def parse_args() -> Namespace:
     """Parse command-line arguments.
@@ -48,8 +69,30 @@ def parse_args() -> Namespace:
     return parser.parse_args()
 
 
-def main(config: Config) -> None:
-    """Define the main calling function."""
+def main(
+    config: Config,
+    get_sampling_engine: Callable[[], AbstractSamplingEngine] | None = None,
+) -> None:
+    """Define the main calling function.
+
+    WORLD_SIZE, LOCAL_RANK, and RANK are retrieved from environment vars.
+
+    Args:
+    ----
+        config: vectorlm config, e.g., loaded from yaml
+        get_sampling_engine: optional, blocking function that initializes the
+            sampling engine. Required if sampling during training is needed.
+            This method is provided in _VLLMCallbackWrapper. To avoid concurrent
+            nccl access, be sure to invoke this method before any torch method
+            that might also access nccl.
+
+    """
+    sampling_engine = (
+        get_sampling_engine() if get_sampling_engine is not None else None
+    )
+    if config.train_parameters.get("sampler") is not None:
+        assert sampling_engine is not None, SAMPLER_NOT_PROVIDED_ERROR_MSG
+
     training_args = config.train_parameters
 
     # set a seed
@@ -66,7 +109,7 @@ def main(config: Config) -> None:
         torch.cuda.empty_cache()
 
     # setup wandb
-    if rank == 0:
+    if rank == 0 and config.enable_wandb_logging:
         wandb_setup(config, **config.wandb_config)
     dist.barrier()
 
@@ -87,7 +130,9 @@ def main(config: Config) -> None:
         is_lora_enabled = True
         peft_adapter_path = None
         # Restore peft adapter from filesystem if available.
-        if checkpoint_exists(training_args.output_dir):
+        if (training_args.checkpointing_enabled) and checkpoint_exists(
+            training_args.output_dir,
+        ):
             peft_adapter_path = os.path.join(
                 training_args.output_dir,
                 "checkpoints",
@@ -115,6 +160,9 @@ def main(config: Config) -> None:
         training_args.low_cpu_mem_usage,
         is_lora_enabled,
     )
+    # Trigger FSDP initialization before retrieving weights.
+    # Otherwise FSDP is_root flag might be set incorrectly.
+    model(input_ids=torch.zeros((1, 1), dtype=torch.int))
 
     # load dataset
     dataset = Dataset(
@@ -151,6 +199,7 @@ def main(config: Config) -> None:
         dataset,
         optimizer,
         lr_scheduler,
+        sampling_engine,
         is_peft_adapter_restored,
     )
 
@@ -159,7 +208,6 @@ def main(config: Config) -> None:
     checkpointed_epoch = trainer.find_checkpoint(training_args.output_dir)
 
     for epoch in range(checkpointed_epoch, training_args.epochs):
-        trainer.model.train()
         train_dl_iterator = iter(dataset.train_dataloader)
         for _ in tqdm(
             range(len(dataset.train_dataloader)),
@@ -184,6 +232,8 @@ def main(config: Config) -> None:
         else:
             save_consolidated_model(trainer.model, hf_save_dir, rank)
         dataset.reset_dataloaders()
+
+    sys.exit(0)
 
 
 if __name__ == "__main__":
